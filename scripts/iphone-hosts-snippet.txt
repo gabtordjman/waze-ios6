@@ -1,0 +1,14 @@
+# À ajouter dans /etc/hosts sur l'iPhone (jailbreak, SSH root)
+# Remplace 192.168.1.191 par l'IP actuelle du PC si besoin.
+
+192.168.1.191 rt.waze.com
+192.168.1.191 row.waze.com
+192.168.1.191 www.waze.com
+192.168.1.191 desc.waze.com
+192.168.1.191 config.waze.com
+192.168.1.191 rtserver.waze.com
+
+# Puis :
+#   killall -9 mDNSResponder 2>/dev/null; killall -9 Waze
+#   (ou redémarre le téléphone)
+# Ouvre Waze pendant que scripts/run-rts-catcher.sh tourne sur le PC.

@@ -1,0 +1,25 @@
+[req]
+distinguished_name = dn
+req_extensions = v3_req
+prompt = no
+
+[dn]
+CN = rt.waze.com
+O = Waze iOS6 Catcher
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = rt.waze.com
+DNS.2 = *.waze.com
+DNS.3 = www.waze.com
+DNS.4 = row.waze.com
+DNS.5 = config.waze.com
+DNS.6 = desc.waze.com
+DNS.7 = rt-old-client
+DNS.8 = localhost
+IP.1 = 192.168.1.191

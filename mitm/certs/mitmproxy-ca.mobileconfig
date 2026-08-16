@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadCertificateFileName</key>
+      <string>mitmproxy-ca.cer</string>
+      <key>PayloadContent</key>
+      <data>MIIDNTCCAh2gAwIBAgIUKz6jskVdA8AkwNZVZkuj+A+V+lQwDQYJKoZIhvcNAQELBQAwKDESMBAGA1UEAwwJbWl0bXByb3h5MRIwEAYDVQQKDAltaXRtcHJveHkwHhcNMjYwODE0MDEwOTE1WhcNMzYwODEzMDEwOTE1WjAoMRIwEAYDVQQDDAltaXRtcHJveHkxEjAQBgNVBAoMCW1pdG1wcm94eTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAPBciJx7vGrI88zEOW0cG7OjQL8GTgI0ChEU0Thcl7mzV9CGRhvqRTsgWJDHb/6dAYjCxINczB5dbDe3OlJqBLf3fjgMbQl2iJZMaNPq7ml34ouoKwv71uoAyWfKpZNc87k4e/Mi623qq5j20krmIFz55T5+ScRFR3tY57HkNPMDbS0qLcPOF0UkeB6DCm5Pyqhgael4JiZU/ujeOmDWiY7Bki6sKOfORsgps7K0RuYGYpar3ckE5TEZs50F8WkThnyq1QLefC0Hte8cV90YN6Lw2Ptta01RcnSC3ApMov+lcCPr/EVk4F4ryNLtB/Pphzmu7rD4/2l711lwq4lPhpkCAwEAAaNXMFUwDwYDVR0TAQH/BAUwAwEB/zATBgNVHSUEDDAKBggrBgEFBQcDATAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYEFGA525/MgAY7CsiVpposcJrdfzTuMA0GCSqGSIb3DQEBCwUAA4IBAQDRIRcAPziqNmNSJwNIbvf9MMIxDfq/bPnLtcUfGbG1GOj75qTkHP8xkv1YrlxSIs7WtPhtqHd3XRUPn9Uj1Q9coR9vaoiuWBoffHB75ViMqyna5/EFTSIt6+9bCCe9ObpV6UOxxj4XZ3v7h1rBrJzJCIbEE6/bs/2ckNQG/MYOAH+N5nr0PXozCWKzTXzGQaO5x+UugdxD96UIdeksWUa6/LKicEODL1RLh4osTfWQOHZGYxg2qqrIjrZuQqZxZgqAGyyY8WFC4jmqkW+7JLgkjyM8vvhmF4wY232h5lJMELjMqSONPCHG0ijx/pLcv2GPWqz8kFpDuAH+fT3sBEsC</data>
+      <key>PayloadDescription</key>
+      <string>Installe la CA mitmproxy pour intercept TLS (Waze iOS 6)</string>
+      <key>PayloadDisplayName</key>
+      <string>mitmproxy</string>
+      <key>PayloadIdentifier</key>
+      <string>org.mitmproxy.ca</string>
+      <key>PayloadType</key>
+      <string>com.apple.security.root</string>
+      <key>PayloadUUID</key>
+      <string>B3A7831C-8D45-495D-B7FF-590AE1046661</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>CA mitmproxy pour Waze iOS 6</string>
+  <key>PayloadDisplayName</key>
+  <string>mitmproxy CA</string>
+  <key>PayloadIdentifier</key>
+  <string>org.mitmproxy.profile</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>BCA1A733-19F3-4EBF-8A78-AC6EC48E7E80</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>

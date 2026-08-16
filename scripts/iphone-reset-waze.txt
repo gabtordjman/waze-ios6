@@ -1,0 +1,12 @@
+# MobileTerminal (su) — reset session Waze pour reforcer GetGeoServerConfig propre
+
+find /var/mobile/Applications -maxdepth 2 -iname '*waze*' 2>/dev/null
+
+# Remplace UUID par celui trouvé :
+# cd /var/mobile/Applications/UUID/Library/Preferences
+# ls
+# rm -f com.waze*.plist 2>/dev/null
+# cd ../.. /Documents
+# rm -f preferences session* 2>/dev/null
+
+killall -9 Waze

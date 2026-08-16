@@ -1,0 +1,6 @@
+RTL=No
+OK=OK
+Cancel=Annuler
+Yes=Oui
+No=Non
+Oops=Oups

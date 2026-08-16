@@ -1,0 +1,21 @@
+# Coller dans MobileTerminal APRÈS : su
+
+# 1) Redirect DNS → PC (IP à adapter si besoin)
+echo 192.168.1.191 rt.waze.com >> /etc/hosts
+echo 192.168.1.191 rt-old-client >> /etc/hosts
+echo 192.168.1.191 row.waze.com >> /etc/hosts
+echo 192.168.1.191 www.waze.com >> /etc/hosts
+echo 192.168.1.191 config.waze.com >> /etc/hosts
+echo 192.168.1.191 desc.waze.com >> /etc/hosts
+grep -E 'waze|rt-old' /etc/hosts
+
+# 2) Chercher l'URL serveur déjà sauvée dans Waze
+find /var/mobile/Applications -iname '*waze*' 2>/dev/null
+find /var/mobile/Containers -iname '*waze*' 2>/dev/null
+# iOS 6 : apps dans /var/mobile/Applications/<UUID>/
+# Cherche la config :
+grep -R "rtserver\|Web-Service\|rt.waze\|http://" /var/mobile/Applications/*/Documents/ 2>/dev/null | head -40
+grep -R "rtserver\|Web-Service\|rt.waze\|http://" /var/mobile/Applications/*/Library/ 2>/dev/null | head -40
+
+# 3) Relance
+killall -9 Waze
