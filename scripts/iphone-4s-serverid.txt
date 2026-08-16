@@ -1,0 +1,25 @@
+# iPhone 4S — UUID trouvé :
+# /var/mobile/Applications/8A5696E5-11B6-4BFB-8408-77BB13D36CCB/Waze.app
+#
+# Colle TOUT d'un coup (ne modifie PAS APP= à la main) :
+
+APP=/var/mobile/Applications/8A5696E5-11B6-4BFB-8408-77BB13D36CCB
+PC=192.168.1.191
+PREF="$APP/Documents/preferences"
+
+killall -9 Waze 2>/dev/null
+[ -f "$PREF" ] || cp "$APP/Waze.app/preferences" "$PREF"
+
+grep -v '^System.ServerId:' "$PREF" | grep -v '^GeoConfig.version:' > "$PREF.n"
+echo "System.ServerId: 1" >> "$PREF.n"
+echo "GeoConfig.version: 1" >> "$PREF.n"
+mv "$PREF.n" "$PREF"
+
+# Download URLs vers le PC
+sed -i "s|http://75.101.158.200|http://$PC|g" "$PREF" 2>/dev/null
+sed -i "s|http://75.101.158.200|http://$PC|g" "$APP/Waze.app/preferences" 2>/dev/null
+
+grep -E 'ServerId|Download.Config' "$PREF"
+rm -f "$APP"/Documents/session*
+killall -9 Waze 2>/dev/null
+echo "OK 4S — rouvre Waze"

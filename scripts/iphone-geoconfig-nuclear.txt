@@ -1,0 +1,40 @@
+# PLAN B — PuTTY (su) — SKIP GetGeo (System.ServerId != -1)
+# PLAN A a échoué : iOS reste sur https://rt.waze.com:443 (câblé), ignore GeoConfig HTTP.
+#
+# Fais ça sur CHAQUE iPhone (UUID différents possibles) :
+
+killall -9 Waze 2>/dev/null
+
+# Trouve toutes les installs Waze :
+find /var/mobile/Applications -name Waze.app -maxdepth 2 2>/dev/null
+
+# Pour CHAQUE APP=.../UUID  (exemple) :
+# APP=/var/mobile/Applications/8047C930-9816-413D-8F01-98BEB2775E5A
+
+# === colle et adapte APP ===
+APP=/var/mobile/Applications/8047C930-9816-413D-8F01-98BEB2775E5A
+PC=192.168.1.191
+
+for PREF in "$APP/Documents/preferences" "$APP/Waze.app/preferences"; do
+  [ -f "$PREF" ] || continue
+  cp "$PREF" "$PREF.bak-geoconfig" 2>/dev/null
+  # retire anciennes lignes puis réécrit
+  grep -v '^System.ServerId:' "$PREF" | \
+  grep -v '^GeoConfig.version:' | \
+  grep -v '^GeoConfig.Web-Service Address:' > "$PREF.new"
+  echo "System.ServerId: 1" >> "$PREF.new"
+  echo "GeoConfig.version: 1" >> "$PREF.new"
+  echo "GeoConfig.Web-Service Address: http://$PC/rtserver" >> "$PREF.new"
+  # Download.* vers PC si encore 75.101
+  sed "s|http://75.101.158.200|http://$PC|g" "$PREF.new" > "$PREF"
+  rm -f "$PREF.new"
+  echo "=== $PREF ==="
+  grep -E 'ServerId|GeoConfig|Download.Config' "$PREF"
+done
+
+rm -f "$APP"/Documents/session* 2>/dev/null
+rm -f "$APP"/Library/Preferences/com.waze*.plist 2>/dev/null
+killall -9 Waze 2>/dev/null
+
+echo "Rouvre Waze. Si GetGeo skip OK: le catcher ne doit PLUS voir ClientInfo+GetGeoServerConfig."
+echo "Si tu vois encore le POST HTTPS: le binaire ignore System.ServerId (autre piste)."
