@@ -35,7 +35,7 @@ fi
 
 export CATCHER_HTTP_PORT=80
 export CATCHER_HTTPS_PORT=443
-export CATCHER_MODE="${CATCHER_MODE:-ultimate}"
+export CATCHER_MODE="${CATCHER_MODE:-plain_cl}"
 export CATCHER_BODY="${CATCHER_BODY:-geo}"
 export CATCHER_CTYPE="${CATCHER_CTYPE:-application/x-www-form-urlencoded; charset=utf-8}"
 export OPENSSL_CONF="$ROOT/mitm/certs/tls/openssl-ios6.cnf"

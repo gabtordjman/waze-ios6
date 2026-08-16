@@ -1,99 +1,54 @@
 #!/usr/bin/env python3
-"""Waze iOS 3.9.x RTS catcher — ultimate v3.
+"""CATCHER_REV=cycle-20260816i
 
-From IPA 3.9.6 (strings + Freemap parser):
-  GeoServerConfig,<id>,<name>,<lang>,<num_params>,<version>
-  then num_params × ServerConfig,<serial>,<category>,<key>,<value>
+Waze iOS 3.9.x RTS catcher — cycles GetGeo response variants per POST.
 
-After geo OK, app downloads lang.conf via Download.Config from preferences:
-  http://75.101.158.200/resources/config/1.0/<serverId>/lang.conf
-That AWS IP is dead → inject ServerConfig to rewrite Download.* to this PC.
+Both phones accept TLS and get a 200, but never GET :80 → transaction fails
+inside WST/geo_config (not a DNS/prefs issue). We cycle the likely causes:
 
-gzip: Content-Length = plaintext size (WST counts decompressed bytes).
-Default run: plain (no gzip) + 1×RC + Geo + ServerConfig Download.* → PC.
-double_rc is a dead end: num_params=0 leaves Download.Config at 75.101.158.200.
+  1) plain + LF + 5×ServerConfig   (match phone request LF; rewrite Download.*)
+  2) plain + LF + bare             (num_params=0; prefs already patched)
+  3) gzip wire-CL + LF + geo5
+  4) gzip plain-CL + LF + geo5     (if WST counts post-inflate bytes)
+  5) plain + CRLF + geo5
+  6) plain + LF + lang=en          (rts_catcher.py used "en" not "eng")
+
+Success = any GET lang.conf / lang.eng on :80.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import gzip
 import os
 import socket
 import ssl
+import struct
 import threading
 import time
+import zlib
 from pathlib import Path
+
+CATCHER_REV = "cycle-20260816i"
+
+os.environ.setdefault("CATCHER_MODE", "cycle")
+os.environ.setdefault("CATCHER_BODY", "cycle")
+os.environ.setdefault("CATCHER_NL", "lf")
+os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
+os.environ.setdefault("CATCHER_HTTP_VER", "1.0")
+os.environ.setdefault("CATCHER_DRAIN_SEC", "5.0")
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG = ROOT / "logs" / "rts-catcher.txt"
-DNSLOG = ROOT / "logs" / "dnsmasq-waze.log"
 TLS_DIR = ROOT / "mitm" / "certs" / "tls"
 RES = ROOT / "mitm" / "fake-resources"
 
 PC_IP = os.environ.get("PC_IP", "192.168.1.191").strip()
 BASE = f"http://{PC_IP}"
 
-
-def _geo_body_with_downloads() -> bytes:
-    """RC + GeoServerConfig + ServerConfig rows that point downloads at the PC."""
-    rows = [
-        "RC,200,OK",
-        "GeoServerConfig,1,world,eng,5,1",
-        f"ServerConfig,0,Download,Config,{BASE}/resources/config/",
-        f"ServerConfig,1,Download,Langs,{BASE}/resources/langs/",
-        f"ServerConfig,2,Download,Images,{BASE}/resources/images/",
-        f"ServerConfig,3,Download,Sound,{BASE}/resources/sounds/",
-        f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
-    ]
-    return ("\r\n".join(rows) + "\r\n").encode("ascii")
-
-
-# CRLF terminators match ExtractNetworkString(",\\r\\n") / VerifyStatus
-BODY_GEO = _geo_body_with_downloads()
-BODY_GEO_BARE = b"RC,200,OK\r\nGeoServerConfig,1,world,eng,0,1\r\n"
-BODY_LOGIN = (
-    b"RC,200,OK\r\n"
-    b"LoginSuccessful,1,cookie123456,1,100,1,1,0,0,0,202,3.9.6.1,"
-    b"1,guest,0,1360000000,0,guest\r\n"
-    b"GeoServerConfig,1,world,eng,0,1\r\n"
-)
-# Fausse piste (ne plus utiliser en prod) : ClientInfo n'a pas d'ACK.
-# geo_config_parser dispatch par tag {RC, GeoServerConfig, ServerConfig}.
-# Un 2e RC est accepté mais num_params=0 → Waze retombe sur 75.101.158.200.
-BODY_DOUBLE_RC = (
-    b"RC,200,OK\r\n"
-    b"RC,200,OK\r\n"
-    b"GeoServerConfig,1,world,eng,0,1\r\n"
-)
-BODY_RC_ONLY = b"RC,200,OK\r\n"
-
-
-def _pick_body(req_body: bytes, body_kind: str) -> tuple[str, bytes]:
-    """Map the RTS command to a response.
-
-    GetGeoServerConfig uses geo_config_parser — only RC / GeoServerConfig /
-    ServerConfig / UpdateConfig. LoginSuccessful here → PARSER missing tag.
-    """
-    if body_kind == "login":
-        return "login", BODY_LOGIN
-    if body_kind == "bare":
-        return "bare", BODY_GEO_BARE
-    if body_kind == "double_rc":
-        return "double_rc", BODY_DOUBLE_RC
-    low = req_body.lower()
-    if b"getgeoserverconfig" in low or b"getgeoconfig" in low:
-        return "geo", BODY_GEO
-    if b"guestlogin" in low or low.startswith(b"login,") or b"\nlogin," in low:
-        return "login_ok", BODY_LOGIN
-    if body_kind == "geo":
-        # CATCHER_BODY=geo but this POST is not GetGeo — don't resend ServerConfig
-        return "rc_only", BODY_RC_ONLY
-    return "geo", BODY_GEO
-
-# wst_init default content-type
 BIN_CT = "binary/octet-stream"
-FORM_CT = "application/x-www-form-urlencoded; charset=utf-8"
+
+_variant_i = 0
+_variant_lock = threading.Lock()
 
 
 def _log(msg: str) -> None:
@@ -104,62 +59,104 @@ def _log(msg: str) -> None:
         f.write(line + "\n")
 
 
-def _gzip(plain: bytes) -> bytes:
-    out = gzip.compress(plain, compresslevel=9, mtime=0)
-    if out[0:2] != b"\x1f\x8b" or out[3] != 0:
-        raise RuntimeError(f"bad gzip hdr {out[:10]!r}")
-    return out
+def _lines(nl: str, *rows: str) -> bytes:
+    return (nl.join(rows) + nl).encode("ascii")
+
+
+def _geo5(nl: str, lang: str = "eng") -> bytes:
+    return _lines(
+        nl,
+        "RC,200,OK",
+        f"GeoServerConfig,1,world,{lang},5,1",
+        f"ServerConfig,0,Download,Config,{BASE}/resources/config/",
+        f"ServerConfig,1,Download,Langs,{BASE}/resources/langs/",
+        f"ServerConfig,2,Download,Images,{BASE}/resources/images/",
+        f"ServerConfig,3,Download,Sound,{BASE}/resources/sounds/",
+        f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
+    )
+
+
+def _bare(nl: str, lang: str = "eng") -> bytes:
+    return _lines(nl, "RC,200,OK", f"GeoServerConfig,1,world,{lang},0,1")
+
+
+def _waze_gzip(data: bytes) -> bytes:
+    """Gzip with flags=0 (required by Waze roadmap_http_comp)."""
+    comp = zlib.compressobj(6, zlib.DEFLATED, -15)
+    body = comp.compress(data) + comp.flush()
+    header = b"\x1f\x8b\x08\x00" + struct.pack("<I", 0) + b"\x00\xff"
+    crc = zlib.crc32(data) & 0xFFFFFFFF
+    trailer = struct.pack("<II", crc, len(data) % (2**32))
+    return header + body + trailer
+
+
+def _http_ver() -> bytes:
+    ver = os.environ.get("CATCHER_HTTP_VER", "1.0").strip() or "1.0"
+    return f"HTTP/{ver} 200 OK\r\n".encode()
 
 
 def _http_response(body: bytes, *, mode: str, ctype: str) -> bytes:
-    """
-    ultimate / gzip_plain_cl — gzip + Content-Length=len(PLAIN)  [DEFAULT v2]
-    plain_cl                 — no gzip, CL=len(body)
-    gzip_wire_cl             — WRONG (hang) — only for repro
-    gzip_nocL                — gzip, no CL
-    """
-    if mode in ("ultimate", "gzip_plain_cl"):
-        gz = _gzip(body)
-        # CRITICAL: CL = plaintext size for WST accounting
-        return (
-            b"HTTP/1.1 200 OK\r\n"
-            + f"Content-Type: {ctype}\r\n".encode()
-            + b"Content-Encoding: gzip\r\n"
-            + f"Content-Length: {len(body)}\r\n".encode()
-            + b"Connection: close\r\n"
-            + b"\r\n"
-            + gz
-        )
+    status = _http_ver()
     if mode == "gzip_wire_cl":
-        gz = _gzip(body)
+        gz = _waze_gzip(body)
         return (
-            b"HTTP/1.1 200 OK\r\n"
+            status
             + f"Content-Type: {ctype}\r\n".encode()
             + b"Content-Encoding: gzip\r\n"
             + f"Content-Length: {len(gz)}\r\n".encode()
-            + b"Connection: close\r\n"
-            + b"\r\n"
+            + b"Connection: close\r\n\r\n"
             + gz
         )
-    if mode == "gzip_nocL":
-        gz = _gzip(body)
+    if mode == "gzip_plain_cl":
+        gz = _waze_gzip(body)
         return (
-            b"HTTP/1.1 200 OK\r\n"
+            status
             + f"Content-Type: {ctype}\r\n".encode()
             + b"Content-Encoding: gzip\r\n"
-            + b"Connection: close\r\n"
-            + b"\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode()
+            + b"Connection: close\r\n\r\n"
             + gz
         )
-    # plain_cl
     return (
-        b"HTTP/1.1 200 OK\r\n"
+        status
         + f"Content-Type: {ctype}\r\n".encode()
         + f"Content-Length: {len(body)}\r\n".encode()
-        + b"Connection: close\r\n"
-        + b"\r\n"
+        + b"Connection: close\r\n\r\n"
         + body
     )
+
+
+# (label, mode, body_bytes)
+def _variants() -> list[tuple[str, str, bytes]]:
+    return [
+        ("1/6 plain+LF+geo5", "plain_cl", _geo5("\n")),
+        ("2/6 plain+LF+bare", "plain_cl", _bare("\n")),
+        ("3/6 gzip_wire+LF+geo5", "gzip_wire_cl", _geo5("\n")),
+        ("4/6 gzip_plainCL+LF+geo5", "gzip_plain_cl", _geo5("\n")),
+        ("5/6 plain+CRLF+geo5", "plain_cl", _geo5("\r\n")),
+        ("6/6 plain+LF+geo5+lang=en", "plain_cl", _geo5("\n", "en")),
+    ]
+
+
+def _next_variant() -> tuple[str, str, bytes]:
+    global _variant_i
+    force = os.environ.get("CATCHER_MODE", "cycle").strip()
+    body_force = os.environ.get("CATCHER_BODY", "cycle").strip()
+    variants = _variants()
+
+    # Fixed experiment if not cycling
+    if force != "cycle" and body_force != "cycle":
+        nl = "\n" if os.environ.get("CATCHER_NL", "lf").lower() != "crlf" else "\r\n"
+        if body_force == "bare":
+            body = _bare(nl)
+        else:
+            body = _geo5(nl)
+        return (f"fixed mode={force} body={body_force}", force, body)
+
+    with _variant_lock:
+        idx = _variant_i % len(variants)
+        _variant_i += 1
+    return variants[idx]
 
 
 def _read_request(conn: socket.socket, limit: int = 65536) -> bytes:
@@ -192,73 +189,20 @@ def _read_request(conn: socket.socket, limit: int = 65536) -> bytes:
 
 
 def _close_clean(conn: socket.socket) -> None:
-    """Don't SSL-unwrap: close_notify from the server can drop the last
-    TLS records on iOS 6 before WST finishes reading Content-Length.
-    Half-close WR, then wait for the phone FIN.
-    """
-    drain = float(os.environ.get("CATCHER_DRAIN_SEC", "2.0"))
-    try:
-        conn.shutdown(socket.SHUT_WR)
-    except Exception:
-        pass
-    conn.settimeout(drain)
-    try:
-        while conn.recv(4096):
-            pass
-    except Exception:
-        pass
+    drain = float(os.environ.get("CATCHER_DRAIN_SEC", "5.0"))
+    time.sleep(drain)
     try:
         conn.close()
     except Exception:
         pass
 
 
-def _watch_dns() -> None:
-    time.sleep(0.5)
-    deadline = time.time() + 35.0
-    last = DNSLOG.stat().st_size if DNSLOG.is_file() else 0
-    hits = 0
-    while time.time() < deadline:
-        try:
-            if DNSLOG.is_file():
-                sz = DNSLOG.stat().st_size
-                if sz > last:
-                    with DNSLOG.open("rb") as f:
-                        f.seek(last)
-                        text = f.read().decode("utf-8", errors="replace")
-                    last = sz
-                    for line in text.splitlines():
-                        if "192.168.1.60" not in line:
-                            continue
-                        low = line.lower()
-                        if any(
-                            x in low
-                            for x in (
-                                "waze-client-resources",
-                                "s3.amazonaws",
-                                "newvconfig",
-                                "75.101",
-                            )
-                        ):
-                            hits += 1
-                            _log(f"  DNS+: {line.strip()}")
-        except Exception:
-            pass
-        time.sleep(0.4)
-        if hits:
-            _log(f"  DNS watch: {hits} hit(s)")
-        else:
-            _log(
-                "  DNS watch: aucun — normal si ServerConfig a reécrit Download.* "
-                "vers le PC. Si aucun GET :80 non plus, Waze tape encore "
-                "http://75.101.158.200/... (IP IPA, pas de DNS)"
-            )
+def _watch_http() -> None:
+    time.sleep(20.0)
+    _log("  watch: si aucun GET :80 après ~20s → cette variante a échoué; rouvre Waze pour la suivante")
 
 
 def _res_candidates(path: str) -> list[Path]:
-    """IPA builds: Download.Config + Ver + serverId + lang.conf
-    e.g. /resources/config/1.0/1/lang.conf
-    """
     name = Path(path).name
     rel = path.lstrip("/")
     out = [
@@ -276,11 +220,9 @@ def _res_candidates(path: str) -> list[Path]:
             RES / "resources" / "config" / "1" / "lang.conf",
             RES / "newVconfig" / "1" / "lang.conf",
             RES / "config" / "lang.conf",
-            RES / "config" / "1" / "lang.conf",
         ]
     if name.startswith("lang."):
         out += [RES / "langs" / name, RES / "resources" / "langs" / name]
-    # de-dup preserve order
     seen: set[str] = set()
     uniq: list[Path] = []
     for c in out:
@@ -293,8 +235,6 @@ def _res_candidates(path: str) -> list[Path]:
 
 def _handle_one(conn: socket.socket, scheme: str) -> None:
     peer = "?"
-    mode = os.environ.get("CATCHER_MODE", "ultimate").strip()
-    body_kind = os.environ.get("CATCHER_BODY", "geo").strip()
     ctype = os.environ.get("CATCHER_CTYPE", BIN_CT).strip()
     try:
         try:
@@ -317,7 +257,11 @@ def _handle_one(conn: socket.socket, scheme: str) -> None:
         first = head.split(b"\r\n", 1)[0].decode("latin1", errors="replace")
         _log(f"{peer} {scheme.upper()} {first}")
         for line in head.split(b"\r\n")[1:]:
-            _log(f"  hdr: {line.decode('latin1', errors='replace')}")
+            low = line.lower()
+            if low.startswith(b"host:") or low.startswith(b"user-agent:") or low.startswith(
+                b"accept-encoding:"
+            ) or low.startswith(b"content-length:"):
+                _log(f"  hdr: {line.decode('latin1', errors='replace')}")
 
         path = "/"
         parts = first.split(" ")
@@ -329,24 +273,26 @@ def _handle_one(conn: socket.socket, scheme: str) -> None:
                 host = line.split(b":", 1)[1].strip().decode("latin1", errors="replace")
 
         if "POST" in first and "/rtserver" in path:
-            _log(f"  req ({len(req_body)}B) {req_body!r}")
-            kind, body = _pick_body(req_body, body_kind)
+            _log(f"  req ({len(req_body)}B) {req_body[:120]!r}...")
+            label, mode, body = _next_variant()
             resp = _http_response(body, mode=mode, ctype=ctype)
             conn.sendall(resp)
             wh, _, payload = resp.partition(b"\r\n\r\n")
+            cl_hdr = "?"
+            for line in wh.split(b"\r\n"):
+                if line.lower().startswith(b"content-length:"):
+                    cl_hdr = line.split(b":", 1)[1].strip().decode()
             _log(
-                f"  → mode={mode} body={kind} (CATCHER_BODY={body_kind}) "
-                f"plain={len(body)}B payload={len(payload)}B wire={len(resp)}B "
-                f"CL={len(body)} PC={PC_IP}"
+                f"  → VARIANT {label} plain={len(body)}B payload={len(payload)}B "
+                f"wire={len(resp)}B CL={cl_hdr}"
             )
-            _log(f"  → plain={body!r}")
+            _log(f"  → plain head={body[:80]!r}...")
             _log(f"  → resp-hdr:\n{wh.decode('latin1', errors='replace')}")
-            if kind == "geo":
-                threading.Thread(target=_watch_dns, daemon=True).start()
+            threading.Thread(target=_watch_http, daemon=True).start()
             return
 
         if "GET" in first:
-            _log(f"  GET {host!r} {path!r}")
+            _log(f"  ★ GET {host!r} {path!r}  ← GetGeo ACCEPTÉ")
             for c in _res_candidates(path):
                 if c.is_file():
                     data = c.read_bytes()
@@ -357,15 +303,13 @@ def _handle_one(conn: socket.socket, scheme: str) -> None:
                         )
                     )
                     return
-            _log(f"  GET MISS {path!r} — tried {[str(c) for c in _res_candidates(path)[:6]]}")
-            if any(
-                x in path
-                for x in ("/config/", "/newVconfig/", "/langs/", "/resources/", "/")
-            ):
-                conn.sendall(_http_response(b"", mode="plain_cl", ctype="application/octet-stream"))
-                return
+            _log(f"  GET MISS {path!r}")
+            conn.sendall(
+                _http_response(b"", mode="plain_cl", ctype="application/octet-stream")
+            )
+            return
 
-        conn.sendall(_http_response(BODY_GEO, mode=mode, ctype=ctype))
+        conn.sendall(_http_response(_bare("\n"), mode="plain_cl", ctype=ctype))
     except Exception as e:
         _log(f"{peer} error: {e}")
     finally:
@@ -399,10 +343,8 @@ def _serve_tls(port: int) -> None:
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("0.0.0.0", port))
     s.listen(20)
-    mode = os.environ.get("CATCHER_MODE", "ultimate")
-    body_kind = os.environ.get("CATCHER_BODY", "geo")
-    _log(f"HTTPS :{port} mode={mode} body={body_kind}")
-    _log(f"GetGeo → 1×RC + Geo+5×ServerConfig Download.* → {PC_IP} | no gzip")
+    _log(f"CATCHER_REV={CATCHER_REV} HTTPS :{port} MODE=cycle (6 variantes)")
+    _log(f"GetGeo cycle → Download.* → {PC_IP} | succès = ★ GET sur :80")
     while True:
         c, _ = s.accept()
         try:
@@ -418,13 +360,13 @@ def _serve_tls(port: int) -> None:
 
 
 def main() -> None:
-    LOG.write_text("# geo: RC+GeoServerConfig+ServerConfig Download.* → PC\n", encoding="utf-8")
-    # Ensure IPA-shaped paths exist for lang.conf
+    LOG.write_text(f"# {CATCHER_REV} — cycle GetGeo variants\n", encoding="utf-8")
     for d in (
         RES / "newVconfig" / "1",
         RES / "resources" / "config" / "1.0" / "1",
         RES / "resources" / "config" / "1",
         RES / "resources" / "langs",
+        RES / "langs",
     ):
         d.mkdir(parents=True, exist_ok=True)
     src = RES / "config" / "lang.conf"
@@ -440,7 +382,16 @@ def main() -> None:
             dest.parent.mkdir(parents=True, exist_ok=True)
             if not dest.is_file():
                 dest.write_bytes(src.read_bytes())
-    _log(f"BODY_GEO ({len(BODY_GEO)}B) CATCHER_BODY={os.environ.get('CATCHER_BODY', 'geo')!r}:\n{BODY_GEO.decode('ascii', errors='replace')}")
+    for lang_name in ("lang.eng", "lang.en"):
+        for dest in (RES / "langs" / lang_name, RES / "resources" / "langs" / lang_name):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.is_file():
+                dest.write_text("OK=OK\nRTL=No\n", encoding="utf-8")
+
+    _log(f"CATCHER_REV={CATCHER_REV} cycling 6 GetGeo variants → {PC_IP}")
+    for label, mode, body in _variants():
+        _log(f"  {label}: mode={mode} {len(body)}B")
+
     threading.Thread(
         target=_serve_plain,
         args=(int(os.environ.get("CATCHER_HTTP_PORT", "80")),),
