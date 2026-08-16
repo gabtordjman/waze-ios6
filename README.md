@@ -1,10 +1,11 @@
 # Waze v9.3.6 - fix
 ## Project Status
 August 16, 2026 - in progress. 
-Halfway done. No more error messages saying: “Oops, an error occurred during the connection.” Now, it takes a long time to load and ends with “Cannot connect to service.” 
-An IPA analysis is underway to determine which file is missing from Waze and to fix this issue.
+Halfway done. No more error messages saying: “Oops, an error occurred during the connection" or "Cannot configure service". These messages have been successfully bypassed.
+Now it's stuck on connecting. It's an issue with the server that i'm working on.
+The map won't show up, and the voices cannot be downloaded. WIP. 
 
-**Goal**: To restore functionality to the **Waze** app, version **3.9.6**, on a jailbroken **iOS 6** device (ex. iPhone 4/iPhone 4S/iPhone 5).
+**Goal of the project**: To restore functionality to the **Waze** app, version **3.9.6**, on a jailbroken **iOS 6** device (ex. iPhone 4/iPhone 4S/iPhone 5).
 
 ## Why?
 
