@@ -1,0 +1,75 @@
+# Patch Realtime + Tiles — coller sur CHAQUE iPhone (adapte APP=)
+#
+# "Searching network" = pas loggé Realtime (Realtime.c).
+# Les tuiles ne partent QU'APRÈS login réussi (roadmap_tile_manager).
+#
+# iPhone 3GS (exemple) :
+#   APP=/var/mobile/Applications/8047C930-9816-413D-8F01-98BEB2775E5A
+# iPhone 4S :
+#   APP=/var/mobile/Applications/8A5696E5-11B6-4BFB-8408-77BB13D36CCB
+
+APP=/var/mobile/Applications/8A5696E5-11B6-4BFB-8408-77BB13D36CCB
+PC=192.168.1.191
+
+killall -9 Waze 2>/dev/null
+
+# hosts → PC (au cas où le DNS Wi‑Fi a changé)
+grep -q "rt.waze.com" /etc/hosts 2>/dev/null || cat >> /etc/hosts << EOF
+$PC rt.waze.com
+$PC row.waze.com
+$PC www.waze.com
+$PC config.waze.com
+$PC desc.waze.com
+$PC rtserver.waze.com
+$PC tiles.waze.com
+$PC tiles1.waze.com
+$PC tilesworld1.waze.com
+EOF
+
+for PREF in "$APP/Documents/preferences" "$APP/Waze.app/preferences"; do
+  [ -f "$PREF" ] || continue
+  cp "$PREF" "$PREF.bak-rt-$(date +%s)" 2>/dev/null
+
+  # retire clés qu'on va réécrire
+  grep -v '^System.ServerId:' "$PREF" | \
+  grep -v '^GeoConfig.version:' | \
+  grep -v '^Realtime.Web-Service Address:' | \
+  grep -v '^Realtime.Web-Service Secured Address:' | \
+  grep -v '^Realtime.Web-Service Secured Address Resolved:' | \
+  grep -v '^Realtime.Web-Service Secure Enabled' | \
+  grep -v '^Download.Tiles:' | \
+  grep -v '^Download.Config:' | \
+  grep -v '^Download.Langs:' | \
+  grep -v '^Download.Images:' | \
+  grep -v '^Download.Sound:' | \
+  grep -v '^Download.Langs TTS:' > "$PREF.n"
+
+  cat >> "$PREF.n" << EOF
+System.ServerId: 1
+GeoConfig.version: 1
+Realtime.Web-Service Address: http://$PC/rtserver
+Realtime.Web-Service Secured Address: https://rt.waze.com/rtserver
+Realtime.Web-Service Secured Address Resolved: https://$PC/rtserver
+Realtime.Web-Service Secure Enabled Client_2_3: yes
+Download.Tiles: http://$PC/tiles
+Download.Config: http://$PC/resources/config/
+Download.Langs: http://$PC/resources/langs/
+Download.Images: http://$PC/resources/images/
+Download.Sound: http://$PC/resources/sounds/
+Download.Langs TTS: http://$PC/resources/lang_tts/
+EOF
+  mv "$PREF.n" "$PREF"
+  echo "=== patched $PREF ==="
+  grep -E 'ServerId|Web-Service|Download.Tiles|Download.Config' "$PREF"
+done
+
+# purge session (compteurs d'erreurs réseau / cookies)
+rm -f "$APP"/Documents/session*
+rm -f "$APP"/Library/Preferences/com.waze*.plist 2>/dev/null
+
+# DNS cache
+killall -9 mDNSResponder 2>/dev/null
+killall -9 Waze 2>/dev/null
+
+echo "OK — rouvre Waze. Catcher doit voir HTTPS POST (Login/GuestLogin)."
+echo "Test DNS:  ping -c 1 rt.waze.com   (doit → $PC)"

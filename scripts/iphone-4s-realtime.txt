@@ -1,0 +1,78 @@
+# iPhone 4S (.61) — shell pur, SANS heredoc / SANS python
+# UUID: 8A5696E5-11B6-4BFB-8408-77BB13D36CCB
+#
+# Depuis le PC (recommandé):
+#   ssh root@192.168.1.61
+# Puis colle les lignes ci-dessous.
+#
+# Si MobileTerminal demande un mot de passe: tu n'es pas root.
+#   su
+#   (mdp root) puis recolle.
+#
+# OBLIGATOIRE: Réglages → Wi‑Fi → (i) → Proxy HTTP → Non
+
+APP=/var/mobile/Applications/8A5696E5-11B6-4BFB-8408-77BB13D36CCB
+PC=192.168.1.191
+PREF=$APP/Documents/preferences
+BUNDLE=$APP/Waze.app/preferences
+USERF=$APP/Documents/user
+TMP=/tmp/waze-pref-n
+
+killall -9 Waze 2>/dev/null
+[ -f "$PREF" ] || cp "$BUNDLE" "$PREF"
+grep -q rt.waze.com /etc/hosts || echo "$PC rt.waze.com" >> /etc/hosts
+
+patch_one() {
+  F="$1"
+  [ -f "$F" ] || return 0
+  cp "$F" "$F.bak-fix"
+  grep -v '^System.ServerId:' "$F" | \
+  grep -v '^GeoConfig.version:' | \
+  grep -v '^GeoConfig.Web-Service Address:' | \
+  grep -v '^Realtime.Web-Service Address:' | \
+  grep -v '^Realtime.Web-Service Secured Address:' | \
+  grep -v '^Realtime.Web-Service Secured Address Resolved:' | \
+  grep -v '^Realtime.Web-Service Secure Enabled' | \
+  grep -v '^Realtime.Web-Service Secured Commands:' | \
+  grep -v '^Realtime.Name:' | \
+  grep -v '^Realtime.Password:' | \
+  grep -v '^Realtime.Nickname:' | \
+  grep -v '^Download.Tiles:' | \
+  grep -v '^Download.Config:' | \
+  grep -v '^Download.Langs:' | \
+  grep -v '^Download.Images:' | \
+  grep -v '^Download.Sound:' | \
+  grep -v '^Download.Langs TTS:' > "$TMP"
+  echo "System.ServerId: 1" >> "$TMP"
+  echo "GeoConfig.version: 1" >> "$TMP"
+  echo "GeoConfig.Web-Service Address: http://rt.waze.com/rtserver" >> "$TMP"
+  echo "Realtime.Web-Service Address: http://rt.waze.com/rtserver" >> "$TMP"
+  echo "Realtime.Web-Service Secured Address: http://rt.waze.com/rtserver" >> "$TMP"
+  echo "Realtime.Web-Service Secured Address Resolved: http://rt.waze.com/rtserver" >> "$TMP"
+  echo "Realtime.Web-Service Secure Enabled Client_2_3: no" >> "$TMP"
+  echo "Realtime.Web-Service Secured Commands:" >> "$TMP"
+  echo "Realtime.Name: ios6user" >> "$TMP"
+  echo "Realtime.Password: ios6pass" >> "$TMP"
+  echo "Realtime.Nickname: ios6user" >> "$TMP"
+  echo "Download.Tiles: http://$PC/tiles" >> "$TMP"
+  echo "Download.Config: http://$PC/resources/config/" >> "$TMP"
+  echo "Download.Langs: http://$PC/resources/langs/" >> "$TMP"
+  echo "Download.Images: http://$PC/resources/images/" >> "$TMP"
+  echo "Download.Sound: http://$PC/resources/sounds/" >> "$TMP"
+  echo "Download.Langs TTS: http://$PC/resources/lang_tts/" >> "$TMP"
+  mv "$TMP" "$F"
+  echo patched "$F"
+}
+
+patch_one "$PREF"
+patch_one "$BUNDLE"
+
+echo "Realtime.Name: ios6user" > "$USERF"
+echo "Realtime.Password: ios6pass" >> "$USERF"
+echo "Realtime.Nickname: ios6user" >> "$USERF"
+echo "Realtime.Random user: 1" >> "$USERF"
+
+rm -f "$APP"/Documents/session*
+killall -9 Waze 2>/dev/null
+grep -E 'Secure Enabled|Realtime.Name' "$PREF"
+echo "4S OK — Proxy OFF, rouvre Waze"

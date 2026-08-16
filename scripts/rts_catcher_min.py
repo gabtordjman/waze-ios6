@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=realtime-login-20260816m
+"""CATCHER_REV=register-noack-20260816q
 
-Breakthrough: System.ServerId: 1 skips GetGeo → license + empty map.
-Next failure = Realtime GuestLogin/Login getting GeoServerConfig instead of
-LoginSuccessful (login_parser). GuestLogin may also need V2 ack.
+ empirically:
+  - Register + ack          → Failed to create account
+  - Register user/pass, no ack → past fail (Connecting) until Stats got LoginSuccessful by mistake
+  - /distrib/ is NOT Freemap V2-ack for this IPA Register
 
-Routing:
-  GetGeoServerConfig → RC + GeoServerConfig (+ ServerConfig)
-  GuestLogin / Login / Register / ClientInfo (no GetGeo) → RC + LoginSuccessful
-  anything else (At, KeepAlive, …) → RC,200,OK
-
-Default: plain body + optional ack\\r\\n for login (CATCHER_LOGIN_ACK=1).
+So: NO ack. RegisterSuccessful,user,pass. Stats/ClientInfo → RC only.
+Login/GuestLogin → LoginSuccessful (no ack).
 """
 
 from __future__ import annotations
@@ -25,12 +22,12 @@ import time
 import zlib
 from pathlib import Path
 
-CATCHER_REV = "realtime-login-20260816m"
+CATCHER_REV = "register-noack-20260816q"
 
-os.environ.setdefault("CATCHER_LOGIN_ACK", "1")
+os.environ.setdefault("CATCHER_LOGIN_ACK", "0")
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.0")
-os.environ.setdefault("CATCHER_DRAIN_SEC", "2.0")
+os.environ.setdefault("CATCHER_DRAIN_SEC", "0.2")
 os.environ.setdefault("CATCHER_NL", "lf")
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,11 +40,10 @@ BASE = f"http://{PC_IP}"
 NL = "\n" if os.environ.get("CATCHER_NL", "lf").lower() != "crlf" else "\r\n"
 BIN_CT = "binary/octet-stream"
 
-# Freemap OnLoginResponse fields (then IPA may ignore trailing extras)
-LOGIN_OK = (
-    "LoginSuccessful,1,cookie123456,1,100,1,1,0,0,0,202,3.9.6.1,"
-    "1,guest,0,1360000000,0,guest"
-)
+# Freemap OnLoginResponse: id,cookie,rank,points,rating,prevPoints,addon,ts,moods,maxProto,serverVer
+LOGIN_OK = "LoginSuccessful,1,cookie123456,1,100,1,1,0,0,0,202,3.9.6.1"
+# OnRegisterResponse: username,password only
+REGISTER_OK = "RegisterSuccessful,ios6user,ios6pass"
 
 
 def _log(msg: str) -> None:
@@ -72,47 +68,41 @@ BODY_GEO5 = _lines(
     f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
 )
 BODY_LOGIN = _lines("RC,200,OK", LOGIN_OK)
-BODY_REGISTER = _lines("RC,200,OK", "RegisterSuccessful,4242,ios6regcookie")
+BODY_REGISTER = _lines("RC,200,OK", REGISTER_OK)
 BODY_RC = _lines("RC,200,OK")
-BODY_LOGIN_GEO = _lines(
-    "RC,200,OK",
-    LOGIN_OK,
-    "GeoServerConfig,1,world,eng,5,1",
-    f"ServerConfig,0,Download,Config,{BASE}/resources/config/",
-    f"ServerConfig,1,Download,Langs,{BASE}/resources/langs/",
-    f"ServerConfig,2,Download,Images,{BASE}/resources/images/",
-    f"ServerConfig,3,Download,Sound,{BASE}/resources/sounds/",
-    f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
-)
 
 
-def _classify(req_body: bytes) -> tuple[str, bytes, bool]:
-    """Return (label, body, want_ack)."""
-    low = req_body.lower()
-    login_ack = os.environ.get("CATCHER_LOGIN_ACK", "1").strip() not in (
+def _ack_enabled() -> bool:
+    return os.environ.get("CATCHER_LOGIN_ACK", "0").strip().lower() not in (
         "0",
         "false",
         "no",
         "off",
+        "auto",  # auto disabled: /distrib/ ≠ V2 ack on this IPA
     )
 
-    if b"getgeoserverconfig" in low or b"getgeoconfig" in low:
-        # Still allow GetGeo if some phone has ServerId=-1
-        if b"clientinfo," in low:
-            return "ClientInfo+GetGeo → Login+Geo5", BODY_LOGIN_GEO, login_ack
-        return "GetGeo → geo5", BODY_GEO5, False
 
-    if b"guestlogin" in low or low.startswith(b"login,") or b"\nlogin," in low:
-        return "GuestLogin/Login → LoginSuccessful", BODY_LOGIN, login_ack
+def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
+    low = req_body.lower()
+    pl = path.lower()
+    ack = _ack_enabled()
 
     if b"register," in low:
-        return "Register → RegisterSuccessful", BODY_REGISTER, login_ack
+        return "Register → RegisterSuccessful (no ack)", BODY_REGISTER, False
 
-    if b"clientinfo," in low:
-        # Post-ServerId skip: ClientInfo alone may still appear — treat as login
-        return "ClientInfo → LoginSuccessful", BODY_LOGIN, login_ack
+    if (
+        "/login" in pl
+        or b"guestlogin" in low
+        or b"\nlogin," in low
+        or low.startswith(b"login,")
+    ):
+        return "Login → LoginSuccessful", BODY_LOGIN, ack
 
-    return "other → RC only", BODY_RC, False
+    if b"getgeoserverconfig" in low or b"getgeoconfig" in low:
+        return "GetGeo → geo5", BODY_GEO5, False
+
+    # Stats / bare ClientInfo / At / KeepAlive — NEVER LoginSuccessful
+    return "RC only", BODY_RC, False
 
 
 def _waze_gzip(data: bytes) -> bytes:
@@ -145,7 +135,7 @@ def _http_envelope(body: bytes, *, ack: bool, gzip: bool = False) -> bytes:
 
 def _read_request(conn: socket.socket, limit: int = 65536) -> bytes:
     data = b""
-    conn.settimeout(15.0)
+    conn.settimeout(12.0)
     try:
         while len(data) < limit:
             chunk = conn.recv(4096)
@@ -178,7 +168,7 @@ def _close_clean(conn: socket.socket) -> None:
             conn.shutdown(socket.SHUT_WR)
     except Exception:
         pass
-    time.sleep(float(os.environ.get("CATCHER_DRAIN_SEC", "2.0")))
+    time.sleep(float(os.environ.get("CATCHER_DRAIN_SEC", "0.2")))
     try:
         conn.close()
     except Exception:
@@ -191,19 +181,33 @@ def _res_candidates(path: str) -> list[Path]:
     out = [
         RES / rel,
         RES / "resources" / rel,
+        RES / "resources" / "images" / "1.0" / "2x" / name,
         RES / "resources" / "config" / "1.0" / "1" / name,
         RES / "resources" / "langs" / name,
         RES / "langs" / name,
         RES / "config" / name,
-        RES / "newVconfig" / "1" / name,
     ]
     seen: set[str] = set()
     uniq: list[Path] = []
     for c in out:
-        if str(c) not in seen:
-            seen.add(str(c))
+        s = str(c)
+        if s not in seen:
+            seen.add(s)
             uniq.append(c)
     return uniq
+
+
+# Minimal 1x1 PNG so search icons don't stay blank forever
+_PNG1 = bytes(
+    [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00,
+        0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+        0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xFE, 0x02, 0xFE, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ]
+)
 
 
 def _handle_one(conn: socket.socket, scheme: str) -> None:
@@ -222,7 +226,7 @@ def _handle_one(conn: socket.socket, scheme: str) -> None:
         peer = conn.getpeername()[0]
         raw = _read_request(conn)
         if not raw:
-            _log(f"{peer} empty")
+            _log(f"{peer} {scheme} empty")
             return
 
         head, _, req_body = raw.partition(b"\r\n\r\n")
@@ -245,11 +249,14 @@ def _handle_one(conn: socket.socket, scheme: str) -> None:
             "/rtserver" in path
             or b"clientinfo" in req_body.lower()
             or b"login" in req_body.lower()
+            or b"register" in req_body.lower()
+            or b"stats," in req_body.lower()
             or b"getgeo" in req_body.lower()
         )
         if is_rts:
-            _log(f"  req ({len(req_body)}B) {req_body!r}")
-            label, body, ack = _classify(req_body)
+            preview = req_body[:160]
+            _log(f"  req ({len(req_body)}B) {preview!r}{'...' if len(req_body) > 160 else ''}")
+            label, body, ack = _classify(req_body, path=path)
             resp = _http_envelope(body, ack=ack, gzip=False)
             conn.sendall(resp)
             _log(f"  → {label} ack={ack} plain={len(body)}B wire={len(resp)}B")
@@ -268,7 +275,9 @@ def _handle_one(conn: socket.socket, scheme: str) -> None:
                     _log(f"RES → {c.relative_to(ROOT)} ({len(data)}B)")
                     conn.sendall(_http_envelope(data, ack=False))
                     return
-            # empty OK for missing assets
+            if path.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
+                conn.sendall(_http_envelope(_PNG1, ack=False))
+                return
             conn.sendall(_http_envelope(b"", ack=False))
             return
 
@@ -306,11 +315,7 @@ def _serve_tls(port: int) -> None:
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("0.0.0.0", port))
     s.listen(20)
-    ack = os.environ.get("CATCHER_LOGIN_ACK", "1")
-    _log(
-        f"CATCHER_REV={CATCHER_REV} HTTPS :{port} "
-        f"login_ack={ack} (GuestLogin→LoginSuccessful)"
-    )
+    _log(f"CATCHER_REV={CATCHER_REV} HTTPS :{port} ack=OFF")
     while True:
         c, _ = s.accept()
         try:
@@ -330,23 +335,14 @@ def main() -> None:
     for d in (
         RES / "resources" / "config" / "1.0" / "1",
         RES / "resources" / "langs",
+        RES / "resources" / "images" / "1.0" / "2x",
         RES / "langs",
     ):
         d.mkdir(parents=True, exist_ok=True)
-    src = RES / "config" / "lang.conf"
-    if src.is_file():
-        dest = RES / "resources" / "config" / "1.0" / "1" / "lang.conf"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(src.read_bytes())
-    for name in ("lang.eng", "lang.en"):
-        for dest in (RES / "langs" / name, RES / "resources" / "langs" / name):
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if not dest.is_file():
-                dest.write_text("OK=OK\nRTL=No\n", encoding="utf-8")
 
     _log(f"CATCHER_REV={CATCHER_REV} → {PC_IP}")
-    _log("GetGeo skip OK (ServerId=1). Now mocking Realtime LoginSuccessful.")
-    _log("Empty map = tiles not mocked yet (next step after login works).")
+    _log("NO ack. Register=user/pass. Stats=RC. Then expect Login POST.")
+    _log("Push OK — next after Login = tiles.")
 
     threading.Thread(
         target=_serve_plain,

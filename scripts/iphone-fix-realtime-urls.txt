@@ -1,0 +1,12 @@
+# NE COLLE PAS CE FICHIER SUR L'IPHONE.
+# Sur le PC Linux (T480), dans le repo waze-ios6 :
+
+# 1) Proxy WiFi iPhone → Non
+# 2) Copie + lance le patch :
+scp scripts/iphone-patch-4.sh root@192.168.1.60:/tmp/waze-patch.sh
+ssh root@192.168.1.60 "sed -i 's/\r$//' /tmp/waze-patch.sh; sh /tmp/waze-patch.sh"
+
+# 3) Verif manuelle (doit afficher no + ios6user) :
+# ssh root@192.168.1.60 "grep 'Secure Enabled' /var/mobile/Applications/8047C930-9816-413D-8F01-98BEB2775E5A/Documents/preferences; grep '^Realtime.Name:' /var/mobile/Applications/8047C930-9816-413D-8F01-98BEB2775E5A/Documents/user"
+
+# 4) Relance catcher, rouvre Waze

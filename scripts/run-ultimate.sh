@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# CATCHER_REV=realtime-login-20260816m
-# Launcher: Realtime LoginSuccessful after GetGeo skip (ServerId=1)
+# CATCHER_REV=register-noack-20260816q
+# Last known-good direction: no V2 ack; Stats≠Login; Register=user/pass
 """Waze iOS6 catcher launcher."""
 from __future__ import annotations
 
@@ -11,29 +11,26 @@ import subprocess
 import sys
 from pathlib import Path
 
-CATCHER_REV = "realtime-login-20260816m"
+CATCHER_REV = "register-noack-20260816q"
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CATCHER = HERE / "rts_catcher_min.py"
 DEAD_IP = "75.101.158.200"
 
-print(f"CATCHER_REV={CATCHER_REV}  GuestLogin→LoginSuccessful (+ack)", flush=True)
-print(
-    "Tu as passé GetGeo (carte vide). Maintenant: Start driving → login mock.",
-    flush=True,
-)
-print("Garde System.ServerId: 1 sur le téléphone.", flush=True)
+print(f"CATCHER_REV={CATCHER_REV}  NO ack | Register=user/pass | Stats=RC only", flush=True)
+print("Succès = plus de Failed to create account, puis POST Login.", flush=True)
+print("Proxy WiFi OFF. Secure Enabled=no.", flush=True)
 
 if not CATCHER.is_file():
     sys.exit(f"ERREUR: {CATCHER} introuvable — copie aussi rts_catcher_min.py")
 
-os.environ["CATCHER_LOGIN_ACK"] = os.environ.get("CATCHER_LOGIN_ACK", "1")
+os.environ["CATCHER_LOGIN_ACK"] = os.environ.get("CATCHER_LOGIN_ACK", "0")
 os.environ["CATCHER_CTYPE"] = "binary/octet-stream"
 os.environ["CATCHER_NL"] = "lf"
 os.environ.setdefault("CATCHER_HTTP_PORT", "80")
 os.environ.setdefault("CATCHER_HTTPS_PORT", "443")
-os.environ.setdefault("CATCHER_DRAIN_SEC", "5.0")
+os.environ.setdefault("CATCHER_DRAIN_SEC", "0.2")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.0")
 os.environ.setdefault(
     "OPENSSL_CONF", str(ROOT / "mitm" / "certs" / "tls" / "openssl-ios6.cnf")
@@ -57,9 +54,8 @@ if not pc_ip:
 os.environ["PC_IP"] = pc_ip
 
 print(f"PC={pc_ip}  phones={phones}", flush=True)
-print("Sans GetGeo: AUCUN log au simple ouvrir Waze — normal.", flush=True)
-print("Fais Start driving / naviguer → doit logger GuestLogin/Login.", flush=True)
-print("4S UUID: 8A5696E5-11B6-4BFB-8408-77BB13D36CCB  (voir iphone-4s-serverid.txt)", flush=True)
+print("'Searching network' = Realtime PAS loggé (tuiles après login).", flush=True)
+print("Sur iPhone: scripts/iphone-realtime-and-tiles.txt puis ping rt.waze.com", flush=True)
 print(flush=True)
 
 # Free :80 / :443 — leftover catcher / nginx causes Errno 98
@@ -136,36 +132,37 @@ def _setup_dnat() -> None:
         print(f"ip_forward skip: {exc}", flush=True)
     ok_any = False
     for ph in phones:
-        for args in (
-            [
-                "-t", "nat", "-D", "PREROUTING",
-                "-s", ph, "-d", DEAD_IP, "-p", "tcp", "--dport", "80",
-                "-j", "DNAT", "--to-destination", f"{pc_ip}:80",
-            ],
-            [
-                "-t", "nat", "-D", "POSTROUTING",
-                "-s", ph, "-d", pc_ip, "-p", "tcp", "--dport", "80",
-                "-j", "MASQUERADE",
-            ],
-        ):
-            _iptables(args)
-        ok1 = _iptables(
-            [
-                "-t", "nat", "-A", "PREROUTING",
-                "-s", ph, "-d", DEAD_IP, "-p", "tcp", "--dport", "80",
-                "-j", "DNAT", "--to-destination", f"{pc_ip}:80",
-            ]
-        )
-        ok2 = _iptables(
-            [
-                "-t", "nat", "-A", "POSTROUTING",
-                "-s", ph, "-d", pc_ip, "-p", "tcp", "--dport", "80",
-                "-j", "MASQUERADE",
-            ]
-        )
-        if ok1 and ok2:
-            ok_any = True
-            print(f"DNAT OK: {ph} → {DEAD_IP}:80 → {pc_ip}:80", flush=True)
+        for dport, local in (("80", "80"), ("443", "443")):
+            for args in (
+                [
+                    "-t", "nat", "-D", "PREROUTING",
+                    "-s", ph, "-d", DEAD_IP, "-p", "tcp", "--dport", dport,
+                    "-j", "DNAT", "--to-destination", f"{pc_ip}:{local}",
+                ],
+                [
+                    "-t", "nat", "-D", "POSTROUTING",
+                    "-s", ph, "-d", pc_ip, "-p", "tcp", "--dport", local,
+                    "-j", "MASQUERADE",
+                ],
+            ):
+                _iptables(args)
+            ok1 = _iptables(
+                [
+                    "-t", "nat", "-A", "PREROUTING",
+                    "-s", ph, "-d", DEAD_IP, "-p", "tcp", "--dport", dport,
+                    "-j", "DNAT", "--to-destination", f"{pc_ip}:{local}",
+                ]
+            )
+            ok2 = _iptables(
+                [
+                    "-t", "nat", "-A", "POSTROUTING",
+                    "-s", ph, "-d", pc_ip, "-p", "tcp", "--dport", local,
+                    "-j", "MASQUERADE",
+                ]
+            )
+            if ok1 and ok2:
+                ok_any = True
+                print(f"DNAT OK: {ph} → {DEAD_IP}:{dport} → {pc_ip}:{local}", flush=True)
     dnat_ok = ok_any
     if not dnat_ok:
         print("DNAT échec (lance en root).", flush=True)
@@ -175,20 +172,21 @@ def _clear_dnat() -> None:
     if not dnat_ok:
         return
     for ph in phones:
-        _iptables(
-            [
-                "-t", "nat", "-D", "PREROUTING",
-                "-s", ph, "-d", DEAD_IP, "-p", "tcp", "--dport", "80",
-                "-j", "DNAT", "--to-destination", f"{pc_ip}:80",
-            ]
-        )
-        _iptables(
-            [
-                "-t", "nat", "-D", "POSTROUTING",
-                "-s", ph, "-d", pc_ip, "-p", "tcp", "--dport", "80",
-                "-j", "MASQUERADE",
-            ]
-        )
+        for dport, local in (("80", "80"), ("443", "443")):
+            _iptables(
+                [
+                    "-t", "nat", "-D", "PREROUTING",
+                    "-s", ph, "-d", DEAD_IP, "-p", "tcp", "--dport", dport,
+                    "-j", "DNAT", "--to-destination", f"{pc_ip}:{local}",
+                ]
+            )
+            _iptables(
+                [
+                    "-t", "nat", "-D", "POSTROUTING",
+                    "-s", ph, "-d", pc_ip, "-p", "tcp", "--dport", local,
+                    "-j", "MASQUERADE",
+                ]
+            )
 
 
 _setup_dnat()
@@ -214,32 +212,28 @@ def _pcap_summary() -> None:
         return
     print(f"\n=== pcap {pcap} ===", flush=True)
     for label, filt in (
+        ("ALL", ""),
         ("port 80", "tcp port 80"),
-        ("75.101", f"host {DEAD_IP}"),
-        ("RST", "tcp[tcpflags] & tcp-rst != 0"),
-        ("FIN", "tcp[tcpflags] & tcp-fin != 0"),
         ("443", "tcp port 443"),
+        ("53 DNS", "udp port 53 or tcp port 53"),
+        ("75.101", f"host {DEAD_IP}"),
+        ("to PC", f"host {pc_ip}"),
+        ("RST", "tcp[tcpflags] & tcp-rst != 0"),
     ):
         try:
-            out = subprocess.check_output(
-                ["tcpdump", "-nn", "-r", str(pcap), filt],
-                stderr=subprocess.STDOUT,
-            )
-            n = sum(
-                1
+            cmd = ["tcpdump", "-nn", "-r", str(pcap)]
+            if filt:
+                cmd.append(filt)
+            out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+            lines = [
+                ln.decode("latin1", errors="replace")
                 for ln in out.splitlines()
                 if ln.strip() and not ln.lower().startswith(b"reading from file")
-            )
-            print(f"  {label}: {n}", flush=True)
-            if label in ("port 80", "75.101") and n:
-                shown = 0
-                for ln in out.decode("latin1", errors="replace").splitlines():
-                    if not ln.strip() or ln.lower().startswith("reading from file"):
-                        continue
+            ]
+            print(f"  {label}: {len(lines)}", flush=True)
+            if label in ("ALL", "to PC", "port 80", "443") and lines:
+                for ln in lines[:15]:
                     print(f"    {ln}", flush=True)
-                    shown += 1
-                    if shown >= 12:
-                        break
         except subprocess.CalledProcessError as exc:
             err = (exc.output or b"").decode("latin1", errors="replace")[:200]
             print(f"  {label}: ERREUR {err}", flush=True)
@@ -272,12 +266,14 @@ try:
             "-U",
             "-w",
             str(pcap),
-            f"(({host_filt}) and (port 443 or port 80)) or host {DEAD_IP}",
+            # ALL traffic from phones (not only 80/443) — find where Realtime goes
+            f"({host_filt}) or host {DEAD_IP}",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     print(f"tcpdump pid={tcpdump_proc.pid} iface={iface} pcap={pcap}", flush=True)
+    print("pcap = TOUT le trafic des iPhones (pas seulement :80/:443)", flush=True)
 except Exception as exc:
     print(f"tcpdump skip: {exc}", flush=True)
 
