@@ -10,6 +10,8 @@ After geo OK, app downloads lang.conf via Download.Config from preferences:
 That AWS IP is dead → inject ServerConfig to rewrite Download.* to this PC.
 
 gzip: Content-Length = plaintext size (WST counts decompressed bytes).
+Default run: plain (no gzip) + 1×RC + Geo + ServerConfig Download.* → PC.
+double_rc is a dead end: num_params=0 leaves Download.Config at 75.101.158.200.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ import gzip
 import os
 import socket
 import ssl
-import struct
 import threading
 import time
 from pathlib import Path
@@ -57,14 +58,38 @@ BODY_LOGIN = (
     b"1,guest,0,1360000000,0,guest\r\n"
     b"GeoServerConfig,1,world,eng,0,1\r\n"
 )
-# TEST: un RC,200,OK par commande batchée reçue (ClientInfo + GetGeoServerConfig)
-# Hypothèse: le parseur attend un ack séparé par commande envoyée dans le POST,
-# pas un seul RC global pour tout le batch.
+# Fausse piste (ne plus utiliser en prod) : ClientInfo n'a pas d'ACK.
+# geo_config_parser dispatch par tag {RC, GeoServerConfig, ServerConfig}.
+# Un 2e RC est accepté mais num_params=0 → Waze retombe sur 75.101.158.200.
 BODY_DOUBLE_RC = (
     b"RC,200,OK\r\n"
     b"RC,200,OK\r\n"
     b"GeoServerConfig,1,world,eng,0,1\r\n"
 )
+BODY_RC_ONLY = b"RC,200,OK\r\n"
+
+
+def _pick_body(req_body: bytes, body_kind: str) -> tuple[str, bytes]:
+    """Map the RTS command to a response.
+
+    GetGeoServerConfig uses geo_config_parser — only RC / GeoServerConfig /
+    ServerConfig / UpdateConfig. LoginSuccessful here → PARSER missing tag.
+    """
+    if body_kind == "login":
+        return "login", BODY_LOGIN
+    if body_kind == "bare":
+        return "bare", BODY_GEO_BARE
+    if body_kind == "double_rc":
+        return "double_rc", BODY_DOUBLE_RC
+    low = req_body.lower()
+    if b"getgeoserverconfig" in low or b"getgeoconfig" in low:
+        return "geo", BODY_GEO
+    if b"guestlogin" in low or low.startswith(b"login,") or b"\nlogin," in low:
+        return "login_ok", BODY_LOGIN
+    if body_kind == "geo":
+        # CATCHER_BODY=geo but this POST is not GetGeo — don't resend ServerConfig
+        return "rc_only", BODY_RC_ONLY
+    return "geo", BODY_GEO
 
 # wst_init default content-type
 BIN_CT = "binary/octet-stream"
@@ -167,24 +192,25 @@ def _read_request(conn: socket.socket, limit: int = 65536) -> bytes:
 
 
 def _close_clean(conn: socket.socket) -> None:
-    # Client often FINs in <20ms on parse fail; still drain briefly
-    time.sleep(float(os.environ.get("CATCHER_DRAIN_SEC", "0.3")))
+    """Don't SSL-unwrap: close_notify from the server can drop the last
+    TLS records on iOS 6 before WST finishes reading Content-Length.
+    Half-close WR, then wait for the phone FIN.
+    """
+    drain = float(os.environ.get("CATCHER_DRAIN_SEC", "2.0"))
     try:
-        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 5))
+        conn.shutdown(socket.SHUT_WR)
+    except Exception:
+        pass
+    conn.settimeout(drain)
+    try:
+        while conn.recv(4096):
+            pass
     except Exception:
         pass
     try:
-        if isinstance(conn, ssl.SSLSocket):
-            try:
-                conn.unwrap()
-            except Exception:
-                pass
         conn.close()
     except Exception:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        pass
 
 
 def _watch_dns() -> None:
@@ -219,7 +245,14 @@ def _watch_dns() -> None:
         except Exception:
             pass
         time.sleep(0.4)
-    _log(f"  DNS watch: {hits} hit(s)" if hits else "  DNS watch: aucun (OK si ServerConfig→PC)")
+        if hits:
+            _log(f"  DNS watch: {hits} hit(s)")
+        else:
+            _log(
+                "  DNS watch: aucun — normal si ServerConfig a reécrit Download.* "
+                "vers le PC. Si aucun GET :80 non plus, Waze tape encore "
+                "http://75.101.158.200/... (IP IPA, pas de DNS)"
+            )
 
 
 def _res_candidates(path: str) -> list[Path]:
@@ -297,25 +330,19 @@ def _handle_one(conn: socket.socket, scheme: str) -> None:
 
         if "POST" in first and "/rtserver" in path:
             _log(f"  req ({len(req_body)}B) {req_body!r}")
-            if body_kind == "login":
-                body = BODY_LOGIN
-            elif body_kind == "bare":
-                body = BODY_GEO_BARE
-            elif body_kind == "double_rc":
-                body = BODY_DOUBLE_RC
-            else:
-                body = BODY_GEO  # geo + Download.* → PC (v3)
+            kind, body = _pick_body(req_body, body_kind)
             resp = _http_response(body, mode=mode, ctype=ctype)
             conn.sendall(resp)
             wh, _, payload = resp.partition(b"\r\n\r\n")
             _log(
-                f"  → mode={mode} body={body_kind} plain={len(body)}B "
-                f"payload={len(payload)}B wire={len(resp)}B "
-                f"CL_in_hdr=plain_size PC={PC_IP}"
+                f"  → mode={mode} body={kind} (CATCHER_BODY={body_kind}) "
+                f"plain={len(body)}B payload={len(payload)}B wire={len(resp)}B "
+                f"CL={len(body)} PC={PC_IP}"
             )
             _log(f"  → plain={body!r}")
             _log(f"  → resp-hdr:\n{wh.decode('latin1', errors='replace')}")
-            threading.Thread(target=_watch_dns, daemon=True).start()
+            if kind == "geo":
+                threading.Thread(target=_watch_dns, daemon=True).start()
             return
 
         if "GET" in first:
@@ -373,8 +400,9 @@ def _serve_tls(port: int) -> None:
     s.bind(("0.0.0.0", port))
     s.listen(20)
     mode = os.environ.get("CATCHER_MODE", "ultimate")
-    _log(f"HTTPS :{port} mode={mode}")
-    _log(f"v3: Geo+ServerConfig Download.* → {PC_IP} | gzip CL=plain")
+    body_kind = os.environ.get("CATCHER_BODY", "geo")
+    _log(f"HTTPS :{port} mode={mode} body={body_kind}")
+    _log(f"GetGeo → 1×RC + Geo+5×ServerConfig Download.* → {PC_IP} | no gzip")
     while True:
         c, _ = s.accept()
         try:
@@ -390,7 +418,7 @@ def _serve_tls(port: int) -> None:
 
 
 def main() -> None:
-    LOG.write_text("# ultimate v3 — ServerConfig redirects Download.* to PC\n", encoding="utf-8")
+    LOG.write_text("# geo: RC+GeoServerConfig+ServerConfig Download.* → PC\n", encoding="utf-8")
     # Ensure IPA-shaped paths exist for lang.conf
     for d in (
         RES / "newVconfig" / "1",
@@ -412,7 +440,7 @@ def main() -> None:
             dest.parent.mkdir(parents=True, exist_ok=True)
             if not dest.is_file():
                 dest.write_bytes(src.read_bytes())
-    _log(f"BODY_GEO ({len(BODY_GEO)}B):\n{BODY_GEO.decode('ascii', errors='replace')}")
+    _log(f"BODY_GEO ({len(BODY_GEO)}B) CATCHER_BODY={os.environ.get('CATCHER_BODY', 'geo')!r}:\n{BODY_GEO.decode('ascii', errors='replace')}")
     threading.Thread(
         target=_serve_plain,
         args=(int(os.environ.get("CATCHER_HTTP_PORT", "80")),),

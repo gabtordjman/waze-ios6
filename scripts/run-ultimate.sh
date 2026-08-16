@@ -52,11 +52,16 @@ cleanup() {
       tcpdump -nn -r "$PCAP" "src host $PHONE and dst host $PC_IP and tcp port 443" 2>/dev/null | wc -l
       echo -n "RST: "; tcpdump -nn -r "$PCAP" "tcp[tcpflags] & tcp-rst != 0" 2>/dev/null | wc -l
       echo -n "FIN: "; tcpdump -nn -r "$PCAP" "tcp[tcpflags] & tcp-fin != 0" 2>/dev/null | wc -l
+      echo -n "frames vers 75.101.158.200 (URL IPA morte): "
+      tcpdump -nn -r "$PCAP" "host 75.101.158.200" 2>/dev/null | wc -l
+      echo -n "frames $PHONE -> $PC_IP :80 : "
+      tcpdump -nn -r "$PCAP" "src host $PHONE and dst host $PC_IP and tcp port 80" 2>/dev/null | wc -l
       echo
       echo "Interprétation:"
-      echo "  Beaucoup de frames PC→phone après le POST = réponse TLS bien envoyée."
-      echo "  RST immédiat depuis le phone = refus/abort lecture."
-      echo "  Pas de RES/DNS S3 dans rts-catcher.txt = Waze n a pas enchaîné lang.conf."
+      echo "  GET :80 vers le PC = ServerConfig a marché (lang.conf)."
+      echo "  Frames vers 75.101.158.200 = Waze ignore encore ServerConfig / num_params=0."
+      echo "  RST immédiat depuis le phone = refus/abort lecture de la réponse RTS."
+      echo "  Pas de RES dans rts-catcher.txt = pas de GET lang.conf reçu ici."
     } | tee "$SUMMARY"
     echo
     echo "Résumé: $SUMMARY"
@@ -68,13 +73,13 @@ echo "=== Essai ultime Waze RTS ==="
 echo "PC=$PC_IP  phone=$PHONE  iface=$IFACE"
 echo "pcap → $PCAP"
 echo
-echo "Réponse: gzip CL=plain + ServerConfig Download.* → PC (v3)"
-echo "Body: RC+Geo+5×ServerConfig | ctype binary/octet-stream"
-echo "Pcap: host phone and (port 443 or port 80)"
+echo "Réponse: 1×RC + GeoServerConfig + 5×ServerConfig Download.* → $PC_IP"
+echo "Body: geo (PAS double_rc) | mode: plain_cl | ctype: binary/octet-stream"
+echo "Pcap: phone 80/443 + 75.101.158.200 (URL IPA morte si ServerConfig ignoré)"
 echo
 echo "1) Tue Waze (multitâche)"
 echo "2) Rouvre Waze"
-echo "3) Attends ~30s — cherche GET lang.conf sur :80"
+echo "3) Attends ~30s — succès = GET /resources/config/.../lang.conf sur :80"
 echo "4) Ctrl+C ici pour le résumé tcpdump"
 echo
 
@@ -95,9 +100,9 @@ if ss -tln | grep -q ':443 '; then
   exit 1
 fi
 
-# Capture HTTPS login + HTTP lang downloads
+# Capture HTTPS login + HTTP lang downloads + fallback IPA IP (no DNS)
 tcpdump -i "$IFACE" -s 0 -w "$PCAP" \
-  "host $PHONE and (port 443 or port 80)" \
+  "(host $PHONE and (port 443 or port 80)) or host 75.101.158.200" \
   >/dev/null 2>&1 &
 TCPDUMP_PID=$!
 sleep 0.3
@@ -110,10 +115,14 @@ echo "tcpdump pid=$TCPDUMP_PID"
 
 export CATCHER_HTTP_PORT=80
 export CATCHER_HTTPS_PORT=443
+# plain_cl: Content-Length = taille réelle du body (WST s'arrête là).
+# geo: 1×RC + GeoServerConfig,num_params=5 + 5×ServerConfig Download.* → PC
+# double_rc était une fausse piste (ClientInfo n'a pas d'ACK) et envoyait num_params=0
+# donc Waze retombait sur http://75.101.158.200/... (IP morte, pas de DNS).
 export CATCHER_MODE=plain_cl
-export CATCHER_BODY=double_rc
+export CATCHER_BODY=geo
 export CATCHER_CTYPE="binary/octet-stream"
-export CATCHER_DRAIN_SEC=0.3
+export CATCHER_DRAIN_SEC=2.0
 export PC_IP="$PC_IP"
 export OPENSSL_CONF="$ROOT/mitm/certs/tls/openssl-ios6.cnf"
 
@@ -121,6 +130,6 @@ export OPENSSL_CONF="$ROOT/mitm/certs/tls/openssl-ios6.cnf"
 PYTHON=python3
 [[ -x "$ROOT/.venv/bin/python" ]] && PYTHON="$ROOT/.venv/bin/python"
 
-echo "catcher mode=ultimate v3 (Geo+ServerConfig → $PC_IP)"
+echo "catcher BODY=$CATCHER_BODY MODE=$CATCHER_MODE → Download.* $PC_IP"
 echo
 exec "$PYTHON" "$ROOT/scripts/rts_catcher_min.py"
