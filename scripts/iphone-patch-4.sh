@@ -101,7 +101,13 @@ if [ -f "$BIN" ]; then
     echo "RegisterSuccessful @ byte $OFF — 96 bytes:"
     dd if="$BIN" bs=1 skip="$OFF" count=96 2>/dev/null | od -An -tx1c | head -20
   fi
+  OFFL=$(grep -aob 'LoginSuccessful' "$BIN" 2>/dev/null | head -1 | cut -d: -f1)
+  if [ -n "$OFFL" ]; then
+    echo "LoginSuccessful @ byte $OFFL — 128 bytes:"
+    dd if="$BIN" bs=1 skip="$OFFL" count=128 2>/dev/null | od -An -tx1c | head -24
+  fi
+  grep -a -o 'ProtoBase64' "$BIN" 2>/dev/null | head -3
 else
   echo "no binary"
 fi
-echo "DONE — First time=iphone_no. Catcher reg-proto202."
+echo "DONE — First time=iphone_no. Catcher login-ipa."

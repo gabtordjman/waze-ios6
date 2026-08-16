@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# CATCHER_REV=reg-proto202-20260816aa
+# CATCHER_REV=login-pad-20260816ac
 """Waze iOS6 catcher launcher."""
 from __future__ import annotations
 
@@ -10,16 +10,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-CATCHER_REV = "reg-proto202-20260816aa"
+CATCHER_REV = "login-pad-20260816ac"
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CATCHER = HERE / "rts_catcher_min.py"
 DEAD_IP = "75.101.158.200"
 
-print(f"CATCHER_REV={CATCHER_REV}  Register→LoginSuccessful fields (proto 202)", flush=True)
-print("Freemap user,pass abandoned (no public pcap; GPL 150 ≠ IPA 202).", flush=True)
-print("Succès = Login POST ou ★ GET tiles", flush=True)
+print(f"CATCHER_REV={CATCHER_REV}  Login PAD (no ServerConfig after)", flush=True)
+print("Succès = 1 Login, plus Searching, ★ GET tiles. Sinon → docs/PROGRESS.md", flush=True)
 
 if not CATCHER.is_file():
     sys.exit(f"ERREUR: {CATCHER} introuvable")

@@ -1,0 +1,154 @@
+root@T480-Gabriel:/home/tordjman/Documents/Projets/waze-ios6# sed -i 's/\r$//' scripts/run-ultimate.sh scripts/rts_catcher_min.py
+sudo python3 scripts/run-ultimate.sh
+CATCHER_REV=login-pad-20260816ac  Login PAD (no ServerConfig after)
+Succès = 1 Login, plus Searching, ★ GET tiles. Sinon → docs/PROGRESS.md
+PC=192.168.1.191  phones=['192.168.1.60', '192.168.1.61']
+'Searching network' = Realtime PAS loggé (tuiles après login).
+Patch: scp scripts/iphone-patch-4.sh root@192.168.1.60:/tmp/ && ssh … sh /tmp/iphone-patch-4.sh
+
+Libération ports catcher…
+  port :80 libéré
+  port :443 libéré
+DNAT OK: 192.168.1.60 → 75.101.158.200:80 → 192.168.1.191:80
+DNAT OK: 192.168.1.60 → 75.101.158.200:443 → 192.168.1.191:443
+DNAT OK: 192.168.1.61 → 75.101.158.200:80 → 192.168.1.191:80
+DNAT OK: 192.168.1.61 → 75.101.158.200:443 → 192.168.1.191:443
+tcpdump pid=31346 iface=wlp3s0 pcap=/home/tordjman/Documents/Projets/waze-ios6/logs/ultimate-latest.pcap
+pcap = TOUT le trafic des iPhones (pas seulement :80/:443)
+[2026-08-17 00:09:59] CATCHER_REV=login-gpl11-ka-20260817a → 192.168.1.191
+[2026-08-17 00:09:59] Login→Freemap-11 exact + UpdateInboxCount + keepalive (no PAD leftover).
+[2026-08-17 00:09:59] HTTP  :80
+/home/tordjman/Documents/Projets/waze-ios6/scripts/rts_catcher_min.py:294: DeprecationWarning: ssl.TLSVersion.TLSv1 is deprecated
+  ctx.minimum_version = ssl.TLSVersion.TLSv1
+[2026-08-17 00:09:59] CATCHER_REV=login-gpl11-ka-20260817a HTTPS :443
+[2026-08-17 00:10:02] 192.168.1.60 HTTP POST /rtserver/distrib/login HTTP/1.1
+[2026-08-17 00:10:02]   cmds: ['ClientInfo', 'Login', 'MapDisplayed', 'ProtoBase64']
+[2026-08-17 00:10:02]   req (419B): b'ClientInfo,202,21,3.9.6.1,eng,6.484410,46.364341,Apple,iPhone3\\,1,iPhone,640,960,normal,6.1.3,0,2,signup_type,Unknown,upgrade_type,Unknown,F,en,2B418A9B-4204-4227-83CB-7AF35A6494F7\nLogin,ios6user,ios6pass,,1,0,1786744378,normal\nMapDisplayed,6.400484,46.524192,6.568336,46.524192,6.501396,46.341340,6.467351,46.341340,6.484410,46.377488,15749\nProtoBase64,yj4s4oMBKAokQjQyMURGRjItRkQxNi00OUJCLUIyMDMtQjA4RThDMzJFRjE1EAA=\n'
+[2026-08-17 00:10:02]   ProtoBase64 decoded 47B hex=ca3e2ce28301280a2442343231444646322d464431362d343942422d423230332d42303845384333…
+[2026-08-17 00:10:02]   → Login→GPL11+Inbox+keepalive ack=b'ack\r\n' close=False wire=198B
+[2026-08-17 00:10:02]   → body:
+RC,200,OK
+LoginSuccessful,4242,2Dyqtmg7r0HCZPFw,1,100,1,1,0,0,0,202,3.9.6.1
+UpdateInboxCount,0
+
+[2026-08-17 00:10:02]   ★ Login. Succès = 1 seul Login, plus de Searching, ★ GET tiles.
+[2026-08-17 00:10:06] 192.168.1.60 HTTP POST /rtserver/distrib/login HTTP/1.1
+[2026-08-17 00:10:06]   cmds: ['ClientInfo', 'Login', 'MapDisplayed', 'ProtoBase64']
+[2026-08-17 00:10:06]   req (419B): b'ClientInfo,202,21,3.9.6.1,eng,6.484681,46.364555,Apple,iPhone3\\,1,iPhone,640,960,normal,6.1.3,0,2,signup_type,Unknown,upgrade_type,Unknown,F,en,2B418A9B-4204-4227-83CB-7AF35A6494F7\nLogin,ios6user,ios6pass,,1,0,1786744378,normal\nMapDisplayed,6.454035,46.396340,6.514784,46.396340,6.514784,46.341392,6.454035,46.341392,6.484410,46.371740,15749\nProtoBase64,yj4s4oMBKAokQjQyMURGRjItRkQxNi00OUJCLUIyMDMtQjA4RThDMzJFRjE1EAA=\n'
+[2026-08-17 00:10:06]   ProtoBase64 decoded 47B hex=ca3e2ce28301280a2442343231444646322d464431362d343942422d423230332d42303845384333…
+[2026-08-17 00:10:06]   → Login→GPL11+Inbox+keepalive ack=b'ack\r\n' close=False wire=198B
+[2026-08-17 00:10:06]   → body:
+RC,200,OK
+LoginSuccessful,4242,2Dyqtmg7r0HCZPFw,1,100,1,1,0,0,0,202,3.9.6.1
+UpdateInboxCount,0
+
+[2026-08-17 00:10:06]   ★ Login. Succès = 1 seul Login, plus de Searching, ★ GET tiles.
+^C
+=== pcap /home/tordjman/Documents/Projets/waze-ios6/logs/ultimate-latest.pcap ===
+  ALL: 79
+    00:10:02.014848 IP 192.168.1.60.61476 > 192.168.1.191.53: 5033+ AAAA? rt.waze.com. (29)
+    00:10:02.014947 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 65
+    00:10:02.015303 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [S], seq 310472954, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167750 ecr 0,sackOK,eol], length 0
+    00:10:02.015304 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [S], seq 3150669693, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167752 ecr 0,sackOK,eol], length 0
+    00:10:02.015406 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [S.], seq 668147423, ack 310472955, win 65160, options [mss 1460,sackOK,TS val 2509270762 ecr 360167750,nop,wscale 7], length 0
+    00:10:02.015456 IP 192.168.1.191.80 > 192.168.1.60.55258: Flags [S.], seq 170998856, ack 3150669694, win 65160, options [mss 1460,sackOK,TS val 247385474 ecr 360167752,nop,wscale 7], length 0
+    00:10:02.033103 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 2509270762], length 0
+    00:10:02.033103 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 247385474], length 0
+    00:10:02.936448 IP 192.168.1.60.61476 > 192.168.1.191.53: 5033+ AAAA? rt.waze.com. (29)
+    00:10:02.936448 IP 192.168.1.60.53190 > 192.168.1.191.53: 28045+ A? graph.facebook.com. (36)
+    00:10:02.936448 IP 192.168.1.60.61040 > 192.168.1.191.53: 15117+ AAAA? graph.facebook.com. (36)
+    00:10:02.936545 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 65
+    00:10:02.936601 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 72
+    00:10:02.936625 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 72
+    00:10:02.960104 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 1:115, ack 1, win 8235, options [nop,nop,TS val 360168780 ecr 2509270762], length 114: HTTP: POST /rtserver/distrib/login HTTP/1.1
+  port 80: 21
+    00:10:02.015303 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [S], seq 310472954, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167750 ecr 0,sackOK,eol], length 0
+    00:10:02.015304 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [S], seq 3150669693, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167752 ecr 0,sackOK,eol], length 0
+    00:10:02.015406 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [S.], seq 668147423, ack 310472955, win 65160, options [mss 1460,sackOK,TS val 2509270762 ecr 360167750,nop,wscale 7], length 0
+    00:10:02.015456 IP 192.168.1.191.80 > 192.168.1.60.55258: Flags [S.], seq 170998856, ack 3150669694, win 65160, options [mss 1460,sackOK,TS val 247385474 ecr 360167752,nop,wscale 7], length 0
+    00:10:02.033103 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 2509270762], length 0
+    00:10:02.033103 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 247385474], length 0
+    00:10:02.960104 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 1:115, ack 1, win 8235, options [nop,nop,TS val 360168780 ecr 2509270762], length 114: HTTP: POST /rtserver/distrib/login HTTP/1.1
+    00:10:02.960186 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [.], ack 115, win 509, options [nop,nop,TS val 2509271707 ecr 360168780], length 0
+    00:10:02.964689 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 115:592, ack 1, win 8235, options [nop,nop,TS val 360168785 ecr 2509271707], length 477: HTTP
+    00:10:02.964790 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [.], ack 592, win 506, options [nop,nop,TS val 2509271711 ecr 360168785], length 0
+    00:10:02.966583 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [P.], seq 1:199, ack 592, win 506, options [nop,nop,TS val 2509271713 ecr 360168785], length 198: HTTP
+    00:10:02.971582 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [.], ack 199, win 8223, options [nop,nop,TS val 360168792 ecr 2509271713], length 0
+    00:10:06.828716 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 592:743, ack 199, win 8223, options [nop,nop,TS val 360172613 ecr 2509271713], length 151: HTTP: POST /rtserver/distrib/login HTTP/1.1
+    00:10:06.873097 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [.], ack 743, win 505, options [nop,nop,TS val 2509275620 ecr 360172613], length 0
+    00:10:06.879748 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 743:1220, ack 199, win 8223, options [nop,nop,TS val 360172692 ecr 2509275620], length 477: HTTP
+  443: 0
+  53 DNS: 32
+  75.101: 0
+  to PC: 79
+    00:10:02.014848 IP 192.168.1.60.61476 > 192.168.1.191.53: 5033+ AAAA? rt.waze.com. (29)
+    00:10:02.014947 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 65
+    00:10:02.015303 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [S], seq 310472954, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167750 ecr 0,sackOK,eol], length 0
+    00:10:02.015304 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [S], seq 3150669693, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167752 ecr 0,sackOK,eol], length 0
+    00:10:02.015406 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [S.], seq 668147423, ack 310472955, win 65160, options [mss 1460,sackOK,TS val 2509270762 ecr 360167750,nop,wscale 7], length 0
+    00:10:02.015456 IP 192.168.1.191.80 > 192.168.1.60.55258: Flags [S.], seq 170998856, ack 3150669694, win 65160, options [mss 1460,sackOK,TS val 247385474 ecr 360167752,nop,wscale 7], length 0
+    00:10:02.033103 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 2509270762], length 0
+    00:10:02.033103 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 247385474], length 0
+    00:10:02.936448 IP 192.168.1.60.61476 > 192.168.1.191.53: 5033+ AAAA? rt.waze.com. (29)
+    00:10:02.936448 IP 192.168.1.60.53190 > 192.168.1.191.53: 28045+ A? graph.facebook.com. (36)
+    00:10:02.936448 IP 192.168.1.60.61040 > 192.168.1.191.53: 15117+ AAAA? graph.facebook.com. (36)
+    00:10:02.936545 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 65
+    00:10:02.936601 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 72
+    00:10:02.936625 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 72
+    00:10:02.960104 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 1:115, ack 1, win 8235, options [nop,nop,TS val 360168780 ecr 2509270762], length 114: HTTP: POST /rtserver/distrib/login HTTP/1.1
+  RST: 0
+
+=== pcap /home/tordjman/Documents/Projets/waze-ios6/logs/ultimate-latest.pcap ===
+  ALL: 79
+    00:10:02.014848 IP 192.168.1.60.61476 > 192.168.1.191.53: 5033+ AAAA? rt.waze.com. (29)
+    00:10:02.014947 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 65
+    00:10:02.015303 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [S], seq 310472954, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167750 ecr 0,sackOK,eol], length 0
+    00:10:02.015304 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [S], seq 3150669693, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167752 ecr 0,sackOK,eol], length 0
+    00:10:02.015406 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [S.], seq 668147423, ack 310472955, win 65160, options [mss 1460,sackOK,TS val 2509270762 ecr 360167750,nop,wscale 7], length 0
+    00:10:02.015456 IP 192.168.1.191.80 > 192.168.1.60.55258: Flags [S.], seq 170998856, ack 3150669694, win 65160, options [mss 1460,sackOK,TS val 247385474 ecr 360167752,nop,wscale 7], length 0
+    00:10:02.033103 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 2509270762], length 0
+    00:10:02.033103 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 247385474], length 0
+    00:10:02.936448 IP 192.168.1.60.61476 > 192.168.1.191.53: 5033+ AAAA? rt.waze.com. (29)
+    00:10:02.936448 IP 192.168.1.60.53190 > 192.168.1.191.53: 28045+ A? graph.facebook.com. (36)
+    00:10:02.936448 IP 192.168.1.60.61040 > 192.168.1.191.53: 15117+ AAAA? graph.facebook.com. (36)
+    00:10:02.936545 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 65
+    00:10:02.936601 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 72
+    00:10:02.936625 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 72
+    00:10:02.960104 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 1:115, ack 1, win 8235, options [nop,nop,TS val 360168780 ecr 2509270762], length 114: HTTP: POST /rtserver/distrib/login HTTP/1.1
+  port 80: 21
+    00:10:02.015303 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [S], seq 310472954, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167750 ecr 0,sackOK,eol], length 0
+    00:10:02.015304 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [S], seq 3150669693, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167752 ecr 0,sackOK,eol], length 0
+    00:10:02.015406 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [S.], seq 668147423, ack 310472955, win 65160, options [mss 1460,sackOK,TS val 2509270762 ecr 360167750,nop,wscale 7], length 0
+    00:10:02.015456 IP 192.168.1.191.80 > 192.168.1.60.55258: Flags [S.], seq 170998856, ack 3150669694, win 65160, options [mss 1460,sackOK,TS val 247385474 ecr 360167752,nop,wscale 7], length 0
+    00:10:02.033103 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 2509270762], length 0
+    00:10:02.033103 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 247385474], length 0
+    00:10:02.960104 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 1:115, ack 1, win 8235, options [nop,nop,TS val 360168780 ecr 2509270762], length 114: HTTP: POST /rtserver/distrib/login HTTP/1.1
+    00:10:02.960186 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [.], ack 115, win 509, options [nop,nop,TS val 2509271707 ecr 360168780], length 0
+    00:10:02.964689 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 115:592, ack 1, win 8235, options [nop,nop,TS val 360168785 ecr 2509271707], length 477: HTTP
+    00:10:02.964790 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [.], ack 592, win 506, options [nop,nop,TS val 2509271711 ecr 360168785], length 0
+    00:10:02.966583 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [P.], seq 1:199, ack 592, win 506, options [nop,nop,TS val 2509271713 ecr 360168785], length 198: HTTP
+    00:10:02.971582 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [.], ack 199, win 8223, options [nop,nop,TS val 360168792 ecr 2509271713], length 0
+    00:10:06.828716 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 592:743, ack 199, win 8223, options [nop,nop,TS val 360172613 ecr 2509271713], length 151: HTTP: POST /rtserver/distrib/login HTTP/1.1
+    00:10:06.873097 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [.], ack 743, win 505, options [nop,nop,TS val 2509275620 ecr 360172613], length 0
+    00:10:06.879748 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 743:1220, ack 199, win 8223, options [nop,nop,TS val 360172692 ecr 2509275620], length 477: HTTP
+  443: 0
+  53 DNS: 32
+  75.101: 0
+  to PC: 79
+    00:10:02.014848 IP 192.168.1.60.61476 > 192.168.1.191.53: 5033+ AAAA? rt.waze.com. (29)
+    00:10:02.014947 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 65
+    00:10:02.015303 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [S], seq 310472954, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167750 ecr 0,sackOK,eol], length 0
+    00:10:02.015304 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [S], seq 3150669693, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 360167752 ecr 0,sackOK,eol], length 0
+    00:10:02.015406 IP 192.168.1.191.80 > 192.168.1.60.55257: Flags [S.], seq 668147423, ack 310472955, win 65160, options [mss 1460,sackOK,TS val 2509270762 ecr 360167750,nop,wscale 7], length 0
+    00:10:02.015456 IP 192.168.1.191.80 > 192.168.1.60.55258: Flags [S.], seq 170998856, ack 3150669694, win 65160, options [mss 1460,sackOK,TS val 247385474 ecr 360167752,nop,wscale 7], length 0
+    00:10:02.033103 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 2509270762], length 0
+    00:10:02.033103 IP 192.168.1.60.55258 > 192.168.1.191.80: Flags [.], ack 1, win 8235, options [nop,nop,TS val 360167857 ecr 247385474], length 0
+    00:10:02.936448 IP 192.168.1.60.61476 > 192.168.1.191.53: 5033+ AAAA? rt.waze.com. (29)
+    00:10:02.936448 IP 192.168.1.60.53190 > 192.168.1.191.53: 28045+ A? graph.facebook.com. (36)
+    00:10:02.936448 IP 192.168.1.60.61040 > 192.168.1.191.53: 15117+ AAAA? graph.facebook.com. (36)
+    00:10:02.936545 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 65
+    00:10:02.936601 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 72
+    00:10:02.936625 IP 192.168.1.191 > 192.168.1.60: ICMP 192.168.1.191 udp port 53 unreachable, length 72
+    00:10:02.960104 IP 192.168.1.60.55257 > 192.168.1.191.80: Flags [P.], seq 1:115, ack 1, win 8235, options [nop,nop,TS val 360168780 ecr 2509270762], length 114: HTTP: POST /rtserver/distrib/login HTTP/1.1
+  RST: 0
+root@T480-Gabriel:/home/tordjman/Documents/Projets/waze-ios6#

@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=reg-proto202-20260816aa
+"""CATCHER_REV=login-gpl11-ka-20260817a
 
-Docs (no public Register pcap found):
-  - Freemap GPL RealtimeNetRec.c OnRegisterResponse (protocol ~150):
-      RC,200,OK
-      RegisterSuccessful,<user>,<pass>
-  - That format was tried for hours on this IPA → Failed to create account, no Login.
-  - This IPA sends ClientInfo protocol 202 and a truncated Register, (no %d,%d,%s).
-  - Jeske/BlackHat: after auth the client needs server ID + cookie (LoginSuccessful fields).
+Doc-correct LoginSuccessful (Freemap RealtimeNetRec.c OnLoginResponse):
 
-Hypothesis (protocol 202): RegisterSuccessful payload mirrors LoginSuccessful
-(id,cookie,rank,points,…) so the random-register path can leave a session ready
-(or at least parse). STOP blind A–G cycling.
+  After tag LoginSuccessful, parse EXACTLY 11 fields then bLoggedIn=TRUE:
+    id, cookie, rank, points, rating, prev, addon, ts, moods, maxProto, ver
+
+  version ExtractNetworkString terminates on ,\\r\\n with TRIM_ALL_CHARS.
+  Any EXTRA CSV after ver (PAD / IPA17 tail) is left as unprocessed data →
+  OnCustomResponse reads next tag ("1", "ios6user", …) →
+  err_parser_missing_tag_handler → transaction FAILED.
+
+  RealTimeLoginState also needs LastError clean + LastNetConnect_Success
+  ("Searching network" = !RealTimeLoginState). So:
+    - exact Freemap-11 line (no leftover poison)
+    - keep-alive on Login (no Connection: close / FIN race — PROGRESS §4)
+    - optional UpdateInboxCount (named handler in login_parser) after clean line
+
+Stats-only ClientInfo bursts are analytics, not proof of login success.
 """
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import os
 import socket
@@ -24,7 +31,7 @@ import threading
 import time
 from pathlib import Path
 
-CATCHER_REV = "reg-proto202-20260816aa"
+CATCHER_REV = "login-gpl11-ka-20260817a"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -39,10 +46,10 @@ PC_IP = os.environ.get("PC_IP", "192.168.1.191").strip()
 BASE = f"http://{PC_IP}"
 BIN_CT = "binary/octet-stream"
 
-# Freemap OnLoginResponse field order (RealtimeNetRec.c)
-LOGIN_OK = "LoginSuccessful,1,cookie123456,1,100,1,1,0,0,0,202,3.9.6.1"
-# Same fields under RegisterSuccessful — protocol-202 hypothesis
-REGISTER_OK = "RegisterSuccessful,1,cookie123456,1,100,1,1,0,0,0,202,3.9.6.1"
+# Freemap OnLoginResponse field order (exactly 11 after tag). Stop at ver.
+# Cookie ≤ RTNET_SERVERCOOKIE_MAXSIZE (63); Jeske-style 16-char token.
+LOGIN_OK = "LoginSuccessful,4242,2Dyqtmg7r0HCZPFw,1,100,1,1,0,0,0,202,3.9.6.1"
+REGISTER_OK = "RegisterSuccessful,ios6user,ios6pass"
 
 
 def _log(msg: str) -> None:
@@ -69,7 +76,8 @@ BODY_GEO5 = _lines(
         f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
     ]
 )
-BODY_LOGIN = _lines(["RC,200,OK", LOGIN_OK])
+# RC + exact LoginSuccessful + optional tagged line (login_parser has handler).
+BODY_LOGIN = _lines(["RC,200,OK", LOGIN_OK, "UpdateInboxCount,0"])
 BODY_REGISTER = _lines(["RC,200,OK", REGISTER_OK])
 BODY_RC = _lines(["RC,200,OK"])
 
@@ -84,14 +92,24 @@ def _cmds(req_body: bytes) -> list[str]:
 
 
 def _ack_for(path: str) -> bytes:
-    # IPA always hits /distrib/ for Register; OnHTTPAck requires ack\r\n
     if "/distrib/" in path.lower():
         return b"ack\r\n"
     return b""
 
 
+def _note_proto_b64(req_body: bytes) -> None:
+    for line in req_body.replace(b"\r\n", b"\n").split(b"\n"):
+        if not line.startswith(b"ProtoBase64,"):
+            continue
+        b64 = line.split(b",", 1)[1].strip()
+        try:
+            raw = base64.b64decode(b64)
+            _log(f"  ProtoBase64 decoded {len(raw)}B hex={raw[:40].hex()}…")
+        except Exception as e:
+            _log(f"  ProtoBase64 decode fail: {e}")
+
+
 def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
-    """Returns label, body, close_after (True=Connection:close)."""
     low = req_body.lower()
     pl = path.lower()
     cmds = _cmds(req_body)
@@ -104,12 +122,14 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
         or low.startswith(b"login,")
         or any(c.lower() in ("login", "guestlogin") for c in cmds)
     ):
-        return "Login→LoginSuccessful", BODY_LOGIN, False
+        _log(f"  req ({len(req_body)}B): {req_body!r}")
+        _note_proto_b64(req_body)
+        # keep-alive: do not FIN mid-WST (PROGRESS §4)
+        return "Login→GPL11+Inbox+keepalive", BODY_LOGIN, False
 
     if b"register," in low:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
-        # close so WST finalizes on EOF; Login (if any) = new TCP
-        return "Register→proto202_LoginFields", BODY_REGISTER, True
+        return "Register→Freemap_userpass", BODY_REGISTER, False
 
     if b"getgeoserverconfig" in low or b"getgeoconfig" in low:
         return "GetGeo→geo5", BODY_GEO5, False
@@ -211,10 +231,8 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 conn.sendall(resp)
                 _log(f"  → {label} ack={ack!r} close={close} wire={len(resp)}B")
                 _log(f"  → body:\n{body.decode('ascii', errors='replace')}")
-                if "Register→" in label:
-                    _log("  Succès = Login POST ou tuiles. Failed = encore faux format.")
                 if "Login→" in label:
-                    _log("  ★ Login")
+                    _log("  ★ Login. Succès = 1 seul Login, plus de Searching, ★ GET tiles.")
                 if close:
                     try:
                         conn.shutdown(socket.SHUT_WR)
@@ -306,7 +324,7 @@ def main() -> None:
     http_port = int(os.environ.get("CATCHER_HTTP_PORT", "80"))
     https_port = int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
     _log(f"CATCHER_REV={CATCHER_REV} → {PC_IP}")
-    _log("Register→LoginSuccessful fields (proto 202). Freemap user,pass abandoned.")
+    _log("Login→Freemap-11 exact + UpdateInboxCount + keepalive (no PAD leftover).")
     threading.Thread(target=_serve_plain, args=(http_port,), daemon=True).start()
     threading.Thread(target=_serve_tls, args=(https_port,), daemon=True).start()
     while True:
