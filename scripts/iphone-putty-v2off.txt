@@ -1,0 +1,53 @@
+APP=/var/mobile/Applications/8047C930-9816-413D-8F01-98BEB2775E5A
+PC=192.168.1.191
+PREF=$APP/Documents/preferences
+BUNDLE=$APP/Waze.app/preferences
+USERF=$APP/Documents/user
+killall -9 Waze
+cp $APP/Waze.app/preferences.bak-wazeios6 $BUNDLE
+cp $BUNDLE $PREF
+sed -i '/Secho/d' $PREF
+sed -i '/Webho/d' $PREF
+sed -i '/Secure Enabled/d' $PREF
+sed -i '/Secured Commands:/d' $PREF
+sed -i '/V2 Suffix/d' $PREF
+sed -i '/V2 Commands/d' $PREF
+sed -i '/ServerId/d' $PREF
+sed -i '/Web-Service Address:/d' $PREF
+sed -i '/Secured Address/d' $PREF
+sed -i '/^Realtime.Name:/d' $PREF
+sed -i '/^Realtime.Password:/d' $PREF
+sed -i '/^Realtime.Nickname:/d' $PREF
+sed -i '/^Download.Tiles:/d' $PREF
+echo System.ServerId: 1 >> $PREF
+echo Realtime.Web-Service Address: http://rt.waze.com/rtserver >> $PREF
+echo Realtime.Web-Service Secured Address: http://rt.waze.com/rtserver >> $PREF
+echo Realtime.Web-Service Secured Address Resolved: http://rt.waze.com/rtserver >> $PREF
+echo Realtime.Web-Service Secure Enabled Client_2_3: no >> $PREF
+echo Realtime.Web-Service Secured Commands: >> $PREF
+echo Realtime.Web-Service V2 Suffix: >> $PREF
+echo Realtime.Web-Service V2 Commands: >> $PREF
+echo Realtime.Name: ios6user >> $PREF
+echo Realtime.Password: ios6pass >> $PREF
+echo Realtime.Nickname: ios6user >> $PREF
+echo Download.Tiles: http://$PC/tiles >> $PREF
+cp $PREF $BUNDLE
+sed -i '/^Realtime.Name:/d' $USERF
+sed -i '/^Realtime.Password:/d' $USERF
+sed -i '/^Realtime.PasswordEnc:/d' $USERF
+sed -i '/^Realtime.Nickname:/d' $USERF
+sed -i '/^Realtime.Random user:/d' $USERF
+sed -i '/^Welcome Wizard.First time:/d' $USERF
+echo Realtime.Name: ios6user >> $USERF
+echo Realtime.Password: ios6pass >> $USERF
+echo Realtime.Nickname: ios6user >> $USERF
+echo Realtime.Random user: 0 >> $USERF
+echo Welcome Wizard.First time: iphone_no >> $USERF
+echo Welcome Wizard.Terms of Use accepted: yes >> $USERF
+rm -f $APP/Documents/session*
+grep Secure $PREF
+grep V2 $PREF
+grep Name $PREF
+grep Name $USERF
+grep Wizard $USERF
+grep Tiles $PREF

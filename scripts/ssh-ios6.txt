@@ -1,0 +1,13 @@
+# Depuis le T480 — OpenSSH moderne refuse ssh-rsa d'iOS6.
+# Toujours ajouter: -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa
+
+# Copier le patch:
+scp -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa \
+  scripts/iphone-patch-4.sh root@192.168.1.60:/tmp/waze-patch.sh
+
+# Lancer:
+ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa \
+  root@192.168.1.60 "sed -i 's/\r$//' /tmp/waze-patch.sh; sh /tmp/waze-patch.sh"
+
+# Ou alias une fois:
+# echo "Host 192.168.1.60\n  HostKeyAlgorithms +ssh-rsa\n  PubkeyAcceptedAlgorithms +ssh-rsa" >> ~/.ssh/config

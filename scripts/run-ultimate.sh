@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# CATCHER_REV=register-noack-20260816q
-# Last known-good direction: no V2 ack; Stats≠Login; Register=user/pass
+# CATCHER_REV=reg-proto202-20260816aa
 """Waze iOS6 catcher launcher."""
 from __future__ import annotations
 
@@ -11,27 +10,25 @@ import subprocess
 import sys
 from pathlib import Path
 
-CATCHER_REV = "register-noack-20260816q"
+CATCHER_REV = "reg-proto202-20260816aa"
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CATCHER = HERE / "rts_catcher_min.py"
 DEAD_IP = "75.101.158.200"
 
-print(f"CATCHER_REV={CATCHER_REV}  NO ack | Register=user/pass | Stats=RC only", flush=True)
-print("Succès = plus de Failed to create account, puis POST Login.", flush=True)
-print("Proxy WiFi OFF. Secure Enabled=no.", flush=True)
+print(f"CATCHER_REV={CATCHER_REV}  Register→LoginSuccessful fields (proto 202)", flush=True)
+print("Freemap user,pass abandoned (no public pcap; GPL 150 ≠ IPA 202).", flush=True)
+print("Succès = Login POST ou ★ GET tiles", flush=True)
 
 if not CATCHER.is_file():
-    sys.exit(f"ERREUR: {CATCHER} introuvable — copie aussi rts_catcher_min.py")
+    sys.exit(f"ERREUR: {CATCHER} introuvable")
 
-os.environ["CATCHER_LOGIN_ACK"] = os.environ.get("CATCHER_LOGIN_ACK", "0")
 os.environ["CATCHER_CTYPE"] = "binary/octet-stream"
-os.environ["CATCHER_NL"] = "lf"
 os.environ.setdefault("CATCHER_HTTP_PORT", "80")
 os.environ.setdefault("CATCHER_HTTPS_PORT", "443")
-os.environ.setdefault("CATCHER_DRAIN_SEC", "0.2")
-os.environ.setdefault("CATCHER_HTTP_VER", "1.0")
+os.environ.setdefault("CATCHER_DRAIN_SEC", "0.15")
+os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
 os.environ.setdefault(
     "OPENSSL_CONF", str(ROOT / "mitm" / "certs" / "tls" / "openssl-ios6.cnf")
 )
@@ -55,7 +52,7 @@ os.environ["PC_IP"] = pc_ip
 
 print(f"PC={pc_ip}  phones={phones}", flush=True)
 print("'Searching network' = Realtime PAS loggé (tuiles après login).", flush=True)
-print("Sur iPhone: scripts/iphone-realtime-and-tiles.txt puis ping rt.waze.com", flush=True)
+print("Patch: scp scripts/iphone-patch-4.sh root@192.168.1.60:/tmp/ && ssh … sh /tmp/iphone-patch-4.sh", flush=True)
 print(flush=True)
 
 # Free :80 / :443 — leftover catcher / nginx causes Errno 98
