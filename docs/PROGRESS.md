@@ -270,15 +270,99 @@ Contrôle sur Lausanne (6.484638, 46.364603), échelle 0 :
 **335677636**. Le catcher journalise ces identifiants dès le `MapDisplayed`,
 avant même que le login passe.
 
-## Cartes hors-ligne `.wzm` — la piste sérieuse
+## Cartes hors-ligne `.wzm` — implémenté
 
 `roadmap_map_download.c` : `roadmap_map_download_region()` télécharge
 `<Download.Source>/<region_code>/map<fips:05d>.wzm` vers
 `roadmap_path_preferred("maps")`, puis `roadmap_tile_reset_session()` recharge
 les tuiles. Activé par la préférence `Download.Enabled = yes`.
 
-C’est bien plus simple que de servir les tuiles une par une : un seul fichier,
-posable directement par SSH sans même passer par le réseau. Le catcher annonce
-`ServerConfig,6,Download,Source,…` et `ServerConfig,7,Download,Enabled,yes`, et
-sert le contenu de `maps/`. Reste à produire le `.wzm` — voir
-`roadmap_tile_storage.c` et `roadmap_tile_storage_sqlite.c` pour le format.
+Un seul fichier, posable aussi directement par SSH sans passer par le réseau.
+Le catcher annonce `ServerConfig,6,Download,Source,…` et
+`ServerConfig,7,Download,Enabled,yes`, et sert le contenu de `maps/`.
+
+`scripts/wazemap.py` produit ce fichier depuis OpenStreetMap. Tout ce qui suit
+est relevé dans la source, pas déduit.
+
+### Emplacement sur l’appareil
+
+`unix/roadmap_path.c`, avec `HOME_PREFIX` vide sous `IPHONE` :
+
+```
+prefere : roadmap_path_cache()  + "/maps"     (# dans la table)
+repli   : roadmap_path_bundle() + "/maps"     (+ dans la table)
+```
+
+`scripts/waze-maps-dir.sh` cherche le dossier réel sur le téléphone plutôt que
+de coder ces chemins en dur — ils changent selon la version d’iOS.
+
+### Conteneur `.wzm` (roadmap_data_format.h, roadmap_gzm.c)
+
+```
+"WGZM"  endianness=1  version=0x00030000        <- map_general_header
+"WZDF"  endianness=1  version=0x00030000        <- tile_general_header, recopie
+                                                   dans chaque tuile extraite
+int min_lon, min_lat, max_lon, max_lat          <- filtre rapide avant recherche
+int num_tiles
+puis num_tiles x { int tile_id; uint offset; uint compressed_size; uint raw_size }
+puis les blobs zlib bruts, sans en-tete
+```
+
+L’index **doit être trié par `tile_id`** : `roadmap_gzm_locate_entry` fait une
+recherche dichotomique. Et le rectangle englobant doit contenir les tuiles,
+sinon la fonction sort avant même de chercher.
+
+### Tuile `.wdf` (roadmap_dbread.c)
+
+```
+"WZDF"  endianness=1  version=0x00030000
+uint compressed_data_size    <- doit valoir taille_fichier - 20, sinon rejet
+uint raw_data_size           <- doit valoir la taille apres decompression
+puis zlib
+
+decompresse :
+  uint num_sections = 28   (model__tile)
+  uint byte_alignment_bits
+  uint end_offset[28]      <- fin de chaque section, non alignee
+  donnees                  <- chaque section demarre a aligne(fin precedente)
+```
+
+Une section vide (`end_offset` égal au précédent) désactive proprement son
+module : `roadmap_db_call_map` n’appelle le handler que si la taille est
+non nulle. C’est ce qui permet de ne remplir que le strict nécessaire.
+
+### Sections réellement remplies
+
+| # | Section | Contenu |
+|---|---------|---------|
+| 9 | `line_data` | `{u16 from, to, first_shape, range}` |
+| 10 | `line_bysquare1` | index cumulatif par catégorie, 1 enregistrement |
+| 13 | `point_data` | `{u16 dx, dy}` relatifs au coin sud-ouest |
+| 26 | `square_data` | `{int tile_id, scale; uint timestamp}` |
+
+Les 24 autres restent vides. En particulier la section `shape` : chaque segment
+OSM devient une ligne droite avec `first_shape = ROADMAP_LINE_NO_SHAPES`, ce qui
+est visuellement identique à une polyligne et supprime l’indexation shape-par-
+ligne, la partie la plus fragile du format.
+
+### Contraintes à ne pas rater
+
+- **Position** : `roadmap_point.h` fait
+  `longitude = bord_ouest + dx × facteur_échelle`. Les `dx`/`dy` sont des `u16`,
+  donc la géométrie doit être découpée aux frontières de tuiles.
+- **Tri par catégorie** : `RoadMapLineBySquare.next[21]` est un cumul par cfcc.
+  `roadmap_line_cfcc` cherche le premier `next[cfcc] > line_id`, donc les lignes
+  doivent être triées par catégorie croissante et `next[20]` valoir le total.
+- **32767 points par tuile au maximum** : une référence de point est masquée par
+  `POINT_REAL_MASK 0x7FFF`, le bit haut étant `POINT_FAKE_FLAG` (point de
+  bordure). Le générateur pose ce bit sur les extrémités créées par le découpage,
+  ce qui permet à `roadmap_screen.c` de savoir que la route continue à côté.
+- **Échelles** : pour rester sous la limite, les échelles grossières ne portent
+  que les grands axes (échelle 1 sans les chemins piétons, échelle 2 uniquement
+  autoroutes/nationales/bretelles).
+- **Cohérence déclarée** : `num_roundabout` et `first_broken[8]` doivent valoir
+  exactement le nombre d’éléments des sections correspondantes, sinon
+  `roadmap_line_map` abandonne (« roundabout count mismatch »).
+
+`python3 scripts/wazemap.py selftest` rejoue tous ces contrôles hors ligne, avec
+la même validation que le client.

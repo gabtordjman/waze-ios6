@@ -2,3 +2,8 @@
 /tweak
 __pycache__/
 *.pyc
+
+# Cartes generees : chacun construit sa region avec scripts/wazemap.py.
+# Un .wzm suisse n'aide personne aux Etats-Unis, et ca pese des Mio.
+/maps/
+/tiles/

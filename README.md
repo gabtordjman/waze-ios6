@@ -1,64 +1,83 @@
-# Waze 3.9.6 — iOS 6 jailbreak
+# Waze sur iOS 6 jailbreak — serveurs et cartes reconstruits
 
-Mock des serveurs RTS morts depuis un PC Linux. Cible : iPhone 4S @ `192.168.1.60`.
+Les serveurs Waze d’origine sont éteints. Ce projet les remplace par un PC Linux
+sur le réseau local, et **fabrique les cartes** à partir d’OpenStreetMap.
+
+Cible principale : **Waze 2.4.0.0**, la dernière version publiée sous GPL v2.
+Comme on a sa source complète, rien n’est deviné — protocole, format de carte,
+tout est lu dans le code. Waze 3.9.6 reste supporté au mieux (voir plus bas).
 
 ---
 
-## État honnête (août 2026)
+## Pourquoi la 2.4.0.0
 
-| Fonction | Statut |
-|----------|--------|
-| Catcher HTTP :80 + DNAT | **OK** |
-| Licence / skip GetGeo (`ServerId: 1`) | **OK** |
-| Téléchargements (icônes, langues) depuis le PC | **OK** |
-| Login POST reçu par le PC | **OK** |
-| Login **accepté** → plus « Searching network » | **en recherche auto** |
-| Tuiles / carte | bloqué par le login, **puis** par l’absence de données de carte |
+La v3 de Waze est une réécriture complète, passée en propriétaire. La dernière
+version open source pour iPhone et Android est la **2.4.0.0** — confirmé par
+Wikipédia et par `iphone/Xcode/Info.plist` du dépôt source
+(`CFBundleVersion 2.4.0.0`).
 
-### Le vrai blocage
+Sa source est sur [github.com/mkoloberdin/waze](https://github.com/mkoloberdin/waze),
+**branche `iphone`** (pas la branche `android` par défaut, qui est un autre port).
+On y lit directement :
 
-L’app envoie `ClientInfo,**202**` : c’est le protocole 202. La seule source Waze
-publique (GPL, `mkoloberdin/waze`) est en protocole **150**, où `OnLoginResponse`
-lit **11 champs** après `LoginSuccessful`. La 202 en attend un nombre différent,
-et ce format n’est documenté nulle part (Waze a arrêté l’open source avant la 3.9).
+| Question | Fichier source | Réponse |
+|---|---|---|
+| Format de la réponse de login | `Realtime/RealtimeNetRec.c` | 11 champs, ordre fixe |
+| Numéro de protocole | `Realtime/RealtimeNetDefs.h` | `RTNET_PROTOCOL_VERSION (150)` |
+| Identifiant d’une tuile | `roadmap_tile.c` | `base + lon×lignes + lat` |
+| Format d’une tuile | `roadmap_data_format.h` | `WZDF` + zlib + 28 sections |
+| Format d’un paquet de région | `roadmap_gzm.c` | `WGZM` + index trié |
 
-Côté client, se tromper échoue toujours :
-
-- trop peu de champs → `err_parser_unexpected_data`
-- trop de champs → le reste de la ligne est lu comme un tag inconnu → `err_parser_missing_tag_handler`
-
-Dans les deux cas la transaction échoue et Waze relance `Login`. C’est exactement
-ce qu’on observe.
-
-**Donc on arrête de deviner** : le catcher essaie automatiquement 16 formats, un
-par tentative de login, et s’arrête sur celui que l’app accepte.
-
-### Quelle version parle le protocole 150 ?
-
-**Waze 2.4.0.0** — la dernière version publiée sous GPL v2, pour iPhone et Android
-(la v3 est une réécriture complète, passée en propriétaire). Vérifié à deux
-sources : Wikipédia (« The last open-source client version for the iPhone and
-Android is 2.4.0.0 ») et le dépôt lui-même, `iphone/Xcode/Info.plist` →
-`CFBundleVersion 2.4.0.0`.
-
-Le mirroir a une branche **`iphone`** : c’est bien le code iOS, pas seulement
-l’Android. Son `Realtime/RealtimeNetRec.c` donne `OnLoginResponse` mot pour mot,
-donc la réponse exacte :
+### Le login
 
 ```
 RC,200,OK
 LoginSuccessful,<id>,<cookie>,<rank>,<points>,<rating>,<prevRank>,<addon>,<pointsTs>,<moods>,<maxProto>,<version>
 ```
 
-Le catcher **détecte le protocole tout seul** et n’a plus rien à deviner en 150 :
+Le catcher **détecte le protocole tout seul**, il n’y a aucun réglage :
 
 | Requête reçue | Mode |
 |---------------|------|
 | `Login,150,<user>,…` (protocole en tête) | réponse GPL exacte, login OK du 1er coup |
-| `ClientInfo,202,…` puis `Login,<user>,…` | balayage des 16 formats candidats |
+| `ClientInfo,202,…` puis `Login,<user>,…` | balayage de 16 formats candidats (3.9.6) |
 
-Donc si tu installes la 2.4.0.0, il n’y a **aucun patch à faire** : lance le
-catcher, il bascule seul.
+---
+
+## Les cartes
+
+`scripts/wazemap.py` construit un paquet de carte Waze depuis OpenStreetMap.
+Chacun génère sa région — il n’y a pas de carte pré-faite dans le dépôt, parce
+qu’un fond de carte suisse n’aide personne ailleurs.
+
+```bash
+# Vérifie le format sans réseau (aucune donnée téléchargée)
+python3 scripts/wazemap.py selftest
+
+# Boston
+python3 scripts/wazemap.py build --bbox -71.19,42.28,-70.95,42.42 --name boston
+
+# Lac Léman
+python3 scripts/wazemap.py build --bbox 6.42,46.33,6.56,46.40 --name leman
+
+# Envoi sur l'iPhone (le dossier cible est découvert sur l'appareil)
+sh maps.sh boston
+```
+
+Le résultat est un unique fichier `maps/<région>/map00000.wzm`. Waze sait aussi
+le télécharger tout seul : le catcher annonce `Download.Source` et sert le
+dossier `maps/`.
+
+Comment ça marche, en bref : chaque route OSM est découpée aux frontières de
+tuiles, chaque tuile devient une base RoadMap compressée (points en 16 bits
+relatifs au coin sud-ouest, lignes triées par catégorie), et l’ensemble est
+empaqueté dans un `.wzm` à index trié. Les points de coupe portent
+`POINT_FAKE_FLAG` pour que le rendu sache que la route continue sur la tuile
+voisine. Détails dans `docs/PROGRESS.md`.
+
+Options utiles : `--max-scale N` (échelles 0..N ; les échelles grossières ne
+gardent que les grands axes), `--osm fichier.json` pour repartir d’un export
+Overpass déjà téléchargé, `--fips` pour changer le numéro de carte.
 
 ---
 
@@ -138,37 +157,31 @@ liste des champs, la section 2 l’erreur exacte du dernier login.
 - `stop.sh` — arrête le catcher (sans toucher nginx)
 - `phone.sh` — patch prefs Waze sur le tel
 - `diag.sh` — récupère journal + champs Login depuis le tel
+- `maps.sh` — envoie une carte générée sur le tel
 - `pull.sh` — sync GitHub → T480
-- `scripts/rts_catcher_min.py` — mock RTS + balayage des formats de login
+- `scripts/wazemap.py` — génère les cartes depuis OpenStreetMap (`selftest`, `build`)
+- `scripts/rts_catcher_min.py` — mock RTS, détection de protocole
 - `docs/PROGRESS.md` — notes techniques détaillées
 
 ---
 
-## Et la carte ?
+## Et la 3.9.6 ?
 
-Deux étapes distinctes, ne pas les confondre. **Passer en 2.4.0.0 règle la 1, pas
-la 2** — les serveurs de carte sont morts pour toutes les versions.
+Elle reste utilisable, mais deux inconnues subsistent, là où la 2.4.0.0 n’en a
+aucune :
 
-1. **Login** — protocole. Résolu en 150, en recherche en 202.
-2. **Données de carte** — les tuiles venaient de `tiles*.waze.com`, éteints eux
-   aussi. Aucune version d’app n’y change quoi que ce soit.
+1. **Login** — protocole 202, format de réponse non documenté. Le catcher balaie
+   16 candidats ; `sh diag.sh` donne la réponse exacte en lisant le binaire.
+2. **Carte** — le format `.wzm`/`.wdf` n’a *probablement* pas changé (signature
+   `WZDF`, version `0x00030000`), donc une carte générée ici a de bonnes chances
+   de marcher aussi. À tester, ce n’est pas vérifié.
 
-Ce que la source GPL apporte quand même, et qui change tout pour la suite :
+Le catcher journalise, dès le `MapDisplayed` et avant même que le login passe,
+les tuiles que le client va réclamer :
 
-- `roadmap_tile.c` donne le calcul exact des identifiants de tuile. Le catcher
-  le refait en Python et journalise, dès le `MapDisplayed`, les tuiles que le
-  client va réclamer (`centre 6.484638,46.365392 → tuiles attendues: s0=335677636…`).
-  Formule : `base[echelle] + index_lon * lignes + index_lat`, coordonnées en
-  micro-degrés, tuile de 0,01° à l’échelle 0, six échelles au total.
-- `roadmap_map_download.c` révèle une porte de sortie bien plus simple que
-  servir les tuiles une par une : Waze sait télécharger un **paquet de carte
-  hors-ligne** `<Download.Source>/<region>/map<fips:05d>.wzm`, l’écrire dans
-  `maps/`, puis appeler `roadmap_tile_reset_session()`. Le catcher annonce
-  maintenant `Download,Source` et `Download,Enabled,yes`, et sert le contenu de
-  `maps/`. Il reste à fabriquer le `.wzm` — c’est le vrai chantier restant.
-
-Dépose les tuiles brutes dans `tiles/` (nommées par identifiant) et les paquets
-dans `maps/` : le catcher les sert sans configuration.
+```
+centre 6.484638,46.365392 → tuiles attendues: s0=335677636, s1=668982409, …
+```
 
 ---
 
