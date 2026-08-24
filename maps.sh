@@ -17,6 +17,7 @@ PHONE="${2:-192.168.1.60}"
 
 if [ -z "$REGION" ]; then
   echo "Usage: sh maps.sh <region> [IP]"
+  echo "       sh maps.sh auto [IP]       region auto (OSM GPS)"
   echo "       sh maps.sh --clean [IP]    retire les cartes du telephone"
   echo "       sh maps.sh --log [IP]      recupere journal et rapports de crash"
   echo
@@ -46,9 +47,24 @@ find_dest() {
 if [ "$REGION" = "--clean" ]; then
   DEST="$(find_dest)"
   [ -z "$DEST" ] && { echo "ERREUR: bundle Waze introuvable sur $PHONE."; exit 1; }
-  echo "Nettoyage de $DEST"
+  CONTAINER=$(dirname "$DEST")
+  echo "Nettoyage bundle $DEST et caches tuiles 77001"
   ssh $SSH_OPTS "root@${PHONE}" \
-    "killall -9 Waze waze 2>/dev/null; rm -f '$DEST'/*.wzm '$DEST'/*_index.wdf '$DEST'/city_index; ls -l '$DEST'"
+    "killall -9 Waze waze 2>/dev/null; \
+     if [ -L '$DEST' ]; then rm -f '$DEST'; elif [ -d '$DEST' ]; then \
+       rm -f '$DEST'/*.wzm '$DEST'/*_index.wdf '$DEST'/city_index; \
+     fi; \
+     CM='$CONTAINER/Library/Caches/maps'; \
+     rm -rf \"\$CM/77001\" \"\$CM/queue\"; \
+     rm -f \"\$CM/tiles_77001.db\" \"\$CM/map77001.wzm\" \"\$CM/77001_index.wdf\"; \
+     rm -f \"\$CM\"/edt*.dat '$DEST'/edt*.dat 2>/dev/null; \
+     for d in \
+       '$CONTAINER/Documents/maps/77001' \
+       '$CONTAINER/Library/maps/77001'; do \
+       [ -e \"\$d\" ] && rm -rf \"\$d\" && echo supprime: \"\$d\"; \
+     done; \
+     ls -la '$DEST' 2>/dev/null; \
+     ls -la \"\$CM\" 2>/dev/null || true"
   echo
   echo "OK. Waze devrait se relancer normalement, sans carte."
   exit 0

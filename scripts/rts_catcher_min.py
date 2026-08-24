@@ -40,7 +40,17 @@ import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-CATCHER_REV = "proto150-carte-20260824f"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from map_auto import schedule_build as _schedule_map_build, coords_sane
+except ImportError:
+    def _schedule_map_build(lon: float, lat: float, *, force: bool = False) -> None:
+        pass
+
+    def coords_sane(lon: float, lat: float) -> bool:
+        return True
+
+CATCHER_REV = "proto150-wzm-zoom-20260825i"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -103,8 +113,51 @@ def _lines(rows: list[str]) -> bytes:
 def _line_fields(req_body: bytes, prefix: bytes) -> list[str]:
     for line in req_body.replace(b"\r\n", b"\n").split(b"\n"):
         if line.lower().startswith(prefix):
-            return [p.strip() for p in line.decode("latin1", errors="replace").split(",")]
+            return line.decode("latin1", errors="replace").split(",")
     return []
+
+
+def _coords_from_body(req_body: bytes) -> tuple[float, float] | None:
+    """GPS réel uniquement — jamais le centre de MapDisplayed.
+
+    Au dézoom / pan, MapDisplayed envoie le centre de *vue* (souvent hors
+    carte locale) ; régénérer dessus écrasait maps/auto/ autour de chez toi.
+    Sources : At / Location / GetGeoServerConfig (lon,lat en degrés).
+    """
+    for prefix, lon_i, lat_i in (
+        (b"at,", 1, 2),
+        (b"location,", 1, 2),
+        (b"getgeoserverconfig,", 2, 3),
+    ):
+        f = _line_fields(req_body, prefix)
+        need = max(lon_i, lat_i) + 1
+        if len(f) < need:
+            continue
+        try:
+            lon, lat = float(f[lon_i]), float(f[lat_i])
+        except ValueError:
+            continue
+        if -180 <= lon <= 180 and -90 <= lat <= 90:
+            return lon, lat
+    return None
+
+
+def _maybe_build_map(req_body: bytes) -> None:
+    # MapDisplayed-only : log des tuiles, pas de rebuild (voir _note_map_displayed).
+    cmds = {c.lower() for c in _cmds(req_body)}
+    if cmds <= {"uid", "mapdisplayed", "stats", "gpsdisconnect"}:
+        return
+    if not (cmds & {"at", "location", "getgeoserverconfig", "getgeoconfig"}):
+        return
+    pair = _coords_from_body(req_body)
+    if not pair:
+        return
+    lon, lat = pair
+    if not coords_sane(lon, lat):
+        _log(f"  GPS ignoré (fix invalide {lon:.6f},{lat:.6f})")
+        return
+    _schedule_map_build(lon, lat)
+    _log(f"  → carte OSM auto programmée pour {lon:.6f},{lat:.6f} (maps/auto/)")
 
 
 def _client_proto(req_body: bytes) -> tuple[int, bool]:
@@ -292,11 +345,12 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Download", "Langs", f"{BASE}/resources/langs/"),
         ("Download", "Images", f"{BASE}/resources/images/"),
         ("Download", "Sound", f"{BASE}/resources/sounds/"),
-        ("Download", "Langs TTS", f"{BASE}/resources/lang_tts/"),
-        ("Download", "Tiles", f"{BASE}/tiles/"),
-        # Paquets de carte hors-ligne : roadmap_map_download.c télécharge
-        # <Download.Source>/<region>/map<fips:05d>.wzm puis appelle
-        # roadmap_tile_reset_session().
+        # Pas de Langs TTS : sinon « Preparing navigation voice » bloque ~27 %.
+        ("TTS", "Feature Enabled", "no"),
+        ("Navigation", "Navigation guidance on", "no"),
+        ("Navigation", "Navigation guidance enabled", "no"),
+        # Pas de Download.Tiles : pousse Waze a telecharger des .wdf HTTP qui
+        # provoquent un crash sur nos tuiles OSM. Carte = map77001.wzm local.
         ("Download", "Source", f"{BASE}/maps"),
         ("Download", "Enabled", "yes"),
         ("Map", "Static County", str(WORLD_FIPS)),
@@ -419,6 +473,7 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
 
     _note_login_proof(cmds)
     _note_map_displayed(req_body)
+    _maybe_build_map(req_body)
 
     # On route sur la commande, jamais sur l'URL : RTNet_GetGeoConfig ouvre sa
     # transaction avec l'action "login" (RealtimeNet.c), donc GetGeoServerConfig
@@ -617,11 +672,16 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
             if "GET" in first:
                 is_tile = "/tiles" in path.lower()
                 if is_tile:
-                    _log(f"  ★★★ TUILE demandée: {path}")
-                    _log(f"      (déposer le fichier dans {TILES})")
-                elif "/maps/" in path.lower():
+                    # Tuiles HTTP desactivees — crash iOS 6. Carte via map77001.wzm local.
+                    conn.sendall(
+                        _http_envelope(
+                            b"", ack=b"", close=False, ctype="text/plain",
+                            status="404 Not Found",
+                        )
+                    )
+                    continue
+                if "/maps/" in path.lower():
                     _log(f"  ★★★ PAQUET DE CARTE demandé: {path}")
-                    _log(f"      (déposer le .wzm dans {MAPS})")
                 else:
                     _log(f"  ★ GET {path}")
                 res = _resolve_resource(path)
@@ -639,15 +699,6 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                         if c.is_file():
                             payload = c.read_bytes()
                             break
-                if not payload and is_tile:
-                    # Une fausse image casserait le décodeur de tuiles : 404 propre.
-                    conn.sendall(
-                        _http_envelope(
-                            b"", ack=b"", close=False, ctype="text/plain",
-                            status="404 Not Found",
-                        )
-                    )
-                    continue
                 if not payload and path.lower().endswith(
                     (".png", ".jpg", ".jpeg", ".gif")
                 ):
@@ -722,12 +773,8 @@ def main() -> None:
     _log("Succès = ★★★ LOGIN ACCEPTÉ (le client envoie At/SeeMe).")
     _log("Remise à zéro du balayage: rm logs/login-variant.txt")
     _log(f"Carte annoncée: Map.Static County={WORLD_FIPS}.")
-    _log(
-        f"  Le téléphone doit avoir map{WORLD_FIPS:05d}.wzm ET {WORLD_FIPS:05d}"
-        "_index.wdf dans Waze.app/maps — sinon écran vide, sans erreur."
-    )
-    _log("  python3 scripts/wazemap.py build --bbox O,S,E,N --name <region>")
-    _log("  sh maps.sh <region>")
+    _log("  Carte locale : sh phone.sh  (index bundle + map77001.wzm cache iOS).")
+    _log("  Pas de tuiles HTTP /tiles/ — crash sur iOS 6 avec tuiles OSM.")
 
     http_sock = _bind_listen(http_port)
     https_sock = _bind_listen(https_port)

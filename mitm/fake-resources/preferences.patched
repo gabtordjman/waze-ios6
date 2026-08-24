@@ -68,7 +68,6 @@ Keyboard.Typing lock threshold: 1000
 Download.Images: http://192.168.1.191/resources/images/
 Download.Sound: http://192.168.1.191/resources/sounds/
 Download.Langs: http://192.168.1.191/resources/langs/
-Download.Langs TTS: http://192.168.1.191/resources/lang_tts/
 Download.Config: http://192.168.1.191/resources/config/
 Download.Images_Ver: 1.0
 Download.Sound_Ver: 1.0
@@ -106,3 +105,6 @@ Folder.crash_logs: #/Breakpad
 Folder.sound: &/sound
 Matcher.Direction Invalid Speed Weight: 10
 Alerts.Alert Distance: 400
+TTS.Feature Enabled: no
+Navigation.Navigation guidance on: no
+Navigation.Navigation guidance enabled: no

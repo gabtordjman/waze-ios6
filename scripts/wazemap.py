@@ -114,15 +114,30 @@ SQUARE_CACHE_SIZE = 512
 POINT_FAKE_FLAG = 0x8000
 POINT_REAL_MASK = 0x7FFF
 MAX_POINTS_PER_TILE = POINT_REAL_MASK
+# iOS 6 / iPhone 4S : plafond de polylignes (plus de segments atomiques).
+MAX_LINES_PER_TILE = 600
+# Shapes intermédiaires max par tuile (short deltas).
+MAX_SHAPES_PER_TILE = 8000
 
 # Les échelles grossières ne portent que les axes importants : c'est ce qui
 # garde le nombre de points sous la limite, et c'est aussi le comportement
 # attendu d'un fond de carte dézoomé.
-SCALE_MAX_CATEGORY = {0: ROAD_WALKWAY, 1: ROAD_STREET, 2: ROAD_RAMP}
+SCALE_MAX_CATEGORY = {
+    0: ROAD_WALKWAY,   # tout
+    1: ROAD_STREET,    # sans sentiers
+    2: ROAD_SECONDARY, # secondaires et plus
+    3: ROAD_PRIMARY,   # nationales / autoroutes
+    4: ROAD_FREEWAY,
+    5: ROAD_FREEWAY,
+}
 
 
 def max_category(scale: int) -> int:
-    return SCALE_MAX_CATEGORY.get(scale, ROAD_PRIMARY)
+    return SCALE_MAX_CATEGORY.get(scale, ROAD_FREEWAY)
+
+
+# Densité des shapes : plus on dézoome, moins on garde de sommets.
+SHAPE_STEP = {0: 1, 1: 1, 2: 2, 3: 4, 4: 8, 5: 16}
 
 OSM_CATEGORY = {
     "motorway": ROAD_FREEWAY,
@@ -268,11 +283,11 @@ def write_wzm(path: Path, tiles: dict[int, bytes], bbox_u: tuple[int, int, int, 
 
 # ── Construction d'une tuile ─────────────────────────────────────────────────
 class TileBuilder:
-    """Accumule points et segments d'une tuile, puis produit son payload.
+    """Accumule des polylignes et produit le payload tuile.
 
-    Chaque segment devient une ligne droite (first_shape = ROADMAP_LINE_NO_SHAPES).
-    C'est visuellement identique à une polyligne et supprime toute la section
-    `shape`, dont l'indexation par ligne est la partie la plus fragile du format.
+    Une voie OSM (clippée à la tuile) = une RoadMapLine dont les sommets
+    intermédiaires sont des RoadMapShape (deltas signés). Sans shapes, chaque
+    petit segment est dessiné comme une pastille → « pâtés blancs ».
     """
 
     def __init__(self, tid: int) -> None:
@@ -280,14 +295,18 @@ class TileBuilder:
         self.west, self.east, self.south, self.north, self.scale = tile_edges(tid)
         self.factor = scale_factor(self.scale)
         self._points: dict[tuple[int, int], int] = {}
-        self._lines: list[tuple[int, int, int]] = []  # (catégorie, depuis, vers)
+        # (catégorie, from_idx, to_idx, middles_dxdy)
+        self._lines: list[tuple[int, int, int, list[tuple[int, int]]]] = []
         self.overflow = False
 
-    def _point(self, lon_u: int, lat_u: int) -> int:
+    def _offset(self, lon_u: int, lat_u: int) -> tuple[int, int]:
         size = TILE_SCALES[self.scale][0]
         dx = min(max((lon_u - self.west) // self.factor, 0), size // self.factor - 1)
         dy = min(max((lat_u - self.south) // self.factor, 0), size // self.factor - 1)
-        key = (dx, dy)
+        return dx, dy
+
+    def _point(self, lon_u: int, lat_u: int) -> int:
+        key = self._offset(lon_u, lat_u)
         idx = self._points.get(key)
         if idx is None:
             idx = len(self._points)
@@ -297,6 +316,43 @@ class TileBuilder:
             self._points[key] = idx
         return idx
 
+    def add_polyline(
+        self,
+        category: int,
+        coords: list[tuple[int, int]],
+        from_cut: bool = False,
+        to_cut: bool = False,
+    ) -> None:
+        """Ajoute une polyligne continue (coords en micro-degrés, dans la tuile)."""
+        if len(coords) < 2:
+            return
+        # Déduplique les sommets qui tombent sur le même offset tuile.
+        cleaned: list[tuple[int, int]] = []
+        for lon, lat in coords:
+            off = self._offset(lon, lat)
+            if not cleaned or cleaned[-1] != off:
+                cleaned.append(off)
+        if len(cleaned) < 2:
+            return
+
+        # Enregistre seulement les extrémités dans point_data.
+        for off in (cleaned[0], cleaned[-1]):
+            if off not in self._points:
+                if len(self._points) > MAX_POINTS_PER_TILE:
+                    self.overflow = True
+                    return
+                self._points[off] = len(self._points)
+
+        i = self._points[cleaned[0]]
+        j = self._points[cleaned[-1]]
+        if i == j and len(cleaned) < 3:
+            return
+        if from_cut:
+            i |= POINT_FAKE_FLAG
+        if to_cut:
+            j |= POINT_FAKE_FLAG
+        self._lines.append((category, i, j, cleaned[1:-1]))
+
     def add_segment(
         self,
         category: int,
@@ -305,33 +361,56 @@ class TileBuilder:
         a_cut: bool = False,
         b_cut: bool = False,
     ) -> None:
-        i, j = self._point(*a), self._point(*b)
-        if i < 0 or j < 0 or i == j:
-            return
-        if a_cut:
-            i |= POINT_FAKE_FLAG
-        if b_cut:
-            j |= POINT_FAKE_FLAG
-        self._lines.append((category, i, j))
+        self.add_polyline(category, [a, b], a_cut, b_cut)
 
     def __len__(self) -> int:
         return len(self._lines)
 
     def payload(self, timestamp: int) -> bytes:
-        # Les lignes doivent être triées par catégorie : l'index cumulatif
-        # next[] de RoadMapLineBySquare délimite chaque catégorie
-        # (cf. roadmap_line_cfcc).
         lines = sorted(self._lines, key=lambda l: l[0])
+        if len(lines) > MAX_LINES_PER_TILE:
+            step = max(1, len(lines) // MAX_LINES_PER_TILE)
+            lines = lines[::step][:MAX_LINES_PER_TILE]
 
         pts = sorted(self._points.items(), key=lambda kv: kv[1])
+        # idx → (dx, dy)
+        idx_to_xy = {idx: xy for xy, idx in pts}
         point_data = b"".join(struct.pack("<HH", dx, dy) for (dx, dy), _ in pts)
+        point_id_data = b"".join(struct.pack("<i", idx) for _, idx in pts)
+
+        shape_data = bytearray()
+        shape_i = 0
+        line_recs: list[tuple[int, int, int, int]] = []  # from, to, first_shape, range
+
+        for _cat, frm, to, middles in lines:
+            if not middles:
+                line_recs.append((frm, to, NO_SHAPES, NO_RANGE))
+                continue
+            if shape_i + 1 + len(middles) > MAX_SHAPES_PER_TILE:
+                line_recs.append((frm, to, NO_SHAPES, NO_RANGE))
+                continue
+            # En-tête : delta_latitude = nombre de sommets intermédiaires.
+            first_shape = shape_i
+            shape_data += struct.pack("<hh", 0, len(middles))
+            shape_i += 1
+            prev = idx_to_xy[frm & POINT_REAL_MASK]
+            for mid in middles:
+                dlon = mid[0] - prev[0]
+                dlat = mid[1] - prev[1]
+                # short signé : saturé si besoin (tuile 10000 µ° / factor).
+                dlon = max(-32767, min(32767, dlon))
+                dlat = max(-32767, min(32767, dlat))
+                shape_data += struct.pack("<hh", dlon, dlat)
+                prev = mid
+                shape_i += 1
+            line_recs.append((frm, to, first_shape, NO_RANGE))
 
         line_data = b"".join(
-            struct.pack("<HHHH", i, j, NO_SHAPES, NO_RANGE) for _, i, j in lines
+            struct.pack("<HHHH", frm, to, fs, rg) for frm, to, fs, rg in line_recs
         )
 
         counts = [0] * (CATEGORY_RANGE + 1)
-        for cat, _, _ in lines:
+        for cat, _, _, _ in lines:
             counts[cat] += 1
         cumulative, total = [], 0
         for c in counts:
@@ -339,20 +418,39 @@ class TileBuilder:
             cumulative.append(total)
         bysquare = (
             b"".join(struct.pack("<H", n) for n in cumulative)
-            + struct.pack("<H", 0)  # num_roundabout
+            + struct.pack("<H", 0)
             + b"".join(struct.pack("<H", 0) for _ in range(DIRECTION_COUNT * 2 + 1))
         )
 
         square = struct.pack("<iiI", self.tid, self.scale, timestamp)
 
-        return pack_payload(
-            {
-                S_POINT_DATA: point_data,
-                S_LINE_DATA: line_data,
-                S_LINE_BYSQUARE1: bysquare,
-                S_SQUARE_DATA: square,
-            }
+        empty_str = b"\0"
+        street_name = struct.pack("<5H", 0, 0, 0, 0, 0)
+        street_city = struct.pack("<HH", 0, 0)
+        route_flags = 0x01
+        line_route = b"".join(
+            struct.pack("<BBBB", route_flags, route_flags, 0, 0) for _ in line_recs
         )
+
+        sections = {
+            S_STRING_PREFIX: empty_str,
+            S_STRING_STREET: empty_str,
+            S_STRING_T2S: empty_str,
+            S_STRING_TYPE: empty_str,
+            S_STRING_SUFFIX: empty_str,
+            S_STRING_CITY: empty_str,
+            S_POINT_DATA: point_data,
+            S_POINT_ID: point_id_data,
+            S_LINE_DATA: line_data,
+            S_LINE_BYSQUARE1: bysquare,
+            S_LINE_ROUTE_DATA: line_route,
+            S_STREET_NAME: street_name,
+            S_STREET_CITY: street_city,
+            S_SQUARE_DATA: square,
+        }
+        if shape_data:
+            sections[S_SHAPE_DATA] = bytes(shape_data)
+        return pack_payload(sections)
 
 
 # ── Découpage des voies aux frontières de tuiles ─────────────────────────────
@@ -405,13 +503,17 @@ OVERPASS_MIRRORS = [
 ]
 
 
-def fetch_overpass(bbox: tuple[float, float, float, float]) -> list[dict]:
+def fetch_overpass(
+    bbox: tuple[float, float, float, float],
+    *,
+    highways: str | None = None,
+) -> list[dict]:
     west, south, east, north = bbox
-    query = (
-        "[out:json][timeout:180];"
-        f'way["highway"]({south},{west},{north},{east});'
-        "out geom;"
-    )
+    if highways:
+        filt = f'way["highway"~"^({highways})(_link)?$"]({south},{west},{north},{east});'
+    else:
+        filt = f'way["highway"]({south},{west},{north},{east});'
+    query = f"[out:json][timeout:180];{filt}out geom;"
     payload = query.encode("utf-8")
     last = ""
 
@@ -450,24 +552,61 @@ def ways_from_elements(elements: list[dict]):
         coords = [
             (int(round(g["lon"] * 1e6)), int(round(g["lat"] * 1e6)))
             for g in el["geometry"]
+            if g and g.get("lon") is not None and g.get("lat") is not None
         ]
         if len(coords) >= 2:
             yield category, coords
 
 
 # ── Assemblage ───────────────────────────────────────────────────────────────
+def clip_way_to_tiles(coords: list[tuple[int, int]], scale: int):
+    """Découpe une voie en polylignes continues, une par tuile traversée.
+
+    Rend (tid, points, from_cut, to_cut).
+    """
+    if len(coords) < 2:
+        return
+
+    cur_tid: int | None = None
+    cur_pts: list[tuple[int, int]] = []
+    cur_from_cut = False
+    cur_to_cut = False
+
+    for a, b in zip(coords, coords[1:]):
+        for tid, sa, sb, a_cut, b_cut in split_by_tile(a, b, scale):
+            if tid != cur_tid:
+                if cur_tid is not None and len(cur_pts) >= 2:
+                    yield cur_tid, cur_pts, cur_from_cut, cur_to_cut
+                cur_tid = tid
+                cur_pts = [sa, sb]
+                cur_from_cut = a_cut
+                cur_to_cut = b_cut
+            else:
+                if cur_pts[-1] != sa:
+                    cur_pts.append(sa)
+                cur_pts.append(sb)
+                cur_to_cut = b_cut
+
+    if cur_tid is not None and len(cur_pts) >= 2:
+        yield cur_tid, cur_pts, cur_from_cut, cur_to_cut
+
+
 def build_tiles(ways, scales: list[int]) -> dict[int, TileBuilder]:
     tiles: dict[int, TileBuilder] = {}
     for category, coords in ways:
         for scale in scales:
             if category > max_category(scale):
                 continue
-            for a, b in zip(coords, coords[1:]):
-                for tid, sa, sb, a_cut, b_cut in split_by_tile(a, b, scale):
-                    builder = tiles.get(tid)
-                    if builder is None:
-                        builder = tiles[tid] = TileBuilder(tid)
-                    builder.add_segment(category, sa, sb, a_cut, b_cut)
+            for tid, pts, from_cut, to_cut in clip_way_to_tiles(coords, scale):
+                builder = tiles.get(tid)
+                if builder is None:
+                    builder = tiles[tid] = TileBuilder(tid)
+                step = SHAPE_STEP.get(scale, 8)
+                if step > 1 and len(pts) > 3:
+                    head, tail = pts[0], pts[-1]
+                    mid = pts[1:-1:step]
+                    pts = [head, *mid, tail]
+                builder.add_polyline(category, pts, from_cut, to_cut)
 
     saturated = [tid for tid, b in tiles.items() if b.overflow]
     if saturated:
@@ -479,14 +618,43 @@ def build_tiles(ways, scales: list[int]) -> dict[int, TileBuilder]:
     return {tid: b for tid, b in tiles.items() if len(b)}
 
 
+def fill_bbox_tiles(
+    tiles: dict[int, TileBuilder],
+    bbox_u: tuple[int, int, int, int],
+    scales: list[int],
+) -> dict[int, TileBuilder]:
+    """Ajoute des tuiles vides (stubs street/dict) pour tout le bbox.
+
+    Sans ça, un pan vers une case sans route → HTTP /77001_… → crash aléatoire.
+    """
+    min_lon, min_lat, max_lon, max_lat = bbox_u
+    out = dict(tiles)
+    for scale in scales:
+        size = TILE_SCALES[scale][0]
+        lon0 = (min_lon + 180_000_000) // size
+        lon1 = (max_lon + 180_000_000) // size
+        lat0 = (min_lat + 90_000_000) // size
+        lat1 = (max_lat + 90_000_000) // size
+        for lon_i in range(lon0, lon1 + 1):
+            for lat_i in range(lat0, lat1 + 1):
+                tid = TILE_SCALES[scale][1] + lon_i * TILE_SCALES[scale][2] + lat_i
+                if tid not in out:
+                    out[tid] = TileBuilder(tid)
+    return out
+
+
 # Taille des structures C de chaque section. roadmap_db_get_data refuse une
 # section dont la taille n'est pas un multiple exact, et pour les points comme
 # pour le carré l'échec est traité en ROADMAP_FATAL — donc l'app se ferme.
 SECTION_ITEM_SIZE = {
+    S_SHAPE_DATA: 4,        # RoadMapShape : 2 × short
     S_POINT_DATA: 4,        # RoadMapPoint   : 2 × unsigned short
     S_POINT_ID: 4,          # int
     S_LINE_DATA: 8,         # RoadMapLine    : 4 × unsigned short
     S_LINE_BYSQUARE1: (CATEGORY_RANGE + 1) * 2 + 2 + (DIRECTION_COUNT * 2 + 1) * 2,
+    S_LINE_ROUTE_DATA: 4,   # RoadMapLineRoute : 4 × unsigned char
+    S_STREET_NAME: 10,      # RoadMapStreetC : 5 × RoadMapString
+    S_STREET_CITY: 4,       # RoadMapCity : RoadMapString + uint16
     S_SQUARE_DATA: 12,      # RoadMapSquare  : 2 × int + unsigned int
     S_METADATA_ATTRIBUTES: 8,  # RoadMapAttribute : 4 × RoadMapString
 }
@@ -523,9 +691,37 @@ def verify_tile(tid: int, payload: bytes) -> list[str]:
             problems.append(f"scale {sq_scale} ≠ {scale} déduit de l'identifiant")
 
     points = sections.get(S_POINT_DATA, b"")
+    point_ids = sections.get(S_POINT_ID, b"")
     lines = sections.get(S_LINE_DATA, b"")
     n_points = len(points) // 4
     n_lines = len(lines) // 8
+    n_pids = len(point_ids) // 4
+
+    if n_points and n_pids != n_points:
+        problems.append(f"point/id : {n_pids} ids pour {n_points} points")
+    if n_points and not n_pids:
+        problems.append("point/id absent — NULL déréférencé au rendu iOS")
+
+    # Sans street + dicts : street_activate(NULL) → SIGSEGV @ 0x18 sur iOS.
+    street = sections.get(S_STREET_NAME, b"")
+    city = sections.get(S_STREET_CITY, b"")
+    if not street and not city:
+        problems.append("street/name+city absents — crash street_activate(NULL)")
+    for name, sid in (
+        ("prefix", S_STRING_PREFIX),
+        ("street", S_STRING_STREET),
+        ("type", S_STRING_TYPE),
+        ("suffix", S_STRING_SUFFIX),
+        ("city", S_STRING_CITY),
+    ):
+        if not sections.get(sid, b""):
+            problems.append(f"dict {name} vide — street_activate FATAL")
+
+    routes = sections.get(S_LINE_ROUTE_DATA, b"")
+    if n_lines and len(routes) // 4 < n_lines:
+        problems.append(
+            f"line_route : {len(routes) // 4} entrées pour {n_lines} lignes"
+        )
 
     # roadmap_point_position indexe sans borne hors DEBUG : un index trop grand
     # lit hors du tampon.
@@ -711,9 +907,20 @@ def cmd_selftest() -> int:
 
 
 def cmd_build(args) -> int:
+    detail_scales = list(range(args.max_scale + 1))
+    wide_scales: list[int] = []
+    wide_bbox = None
+    if getattr(args, "wide_bbox", None):
+        wide_min = getattr(args, "wide_min_scale", 2)
+        detail_scales = list(range(min(wide_min, args.max_scale + 1)))
+        wide_scales = list(range(wide_min, args.max_scale + 1))
+        wide_bbox = tuple(float(v) for v in args.wide_bbox.split(","))
+
     if args.osm:
         elements = json.loads(Path(args.osm).read_text(encoding="utf-8")).get("elements", [])
         print(f"{len(elements)} éléments lus depuis {args.osm}")
+        ways = list(ways_from_elements(elements))
+        wide_ways = ways if wide_scales else []
     else:
         west, south, east, north = (float(v) for v in args.bbox.split(","))
         print(f"Interrogation d'Overpass pour {west},{south},{east},{north}…")
@@ -723,22 +930,74 @@ def cmd_build(args) -> int:
             print(f"\n{exc}", file=sys.stderr)
             return 1
         print(f"{len(elements)} éléments reçus")
-        # Un téléchargement réussi ne se reperd pas : si la suite échoue ou si
-        # tu veux réessayer avec d'autres options, --osm repart de ce fichier.
         cache = ROOT / "logs" / f"osm-{args.name}.json"
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps({"elements": elements}), encoding="utf-8")
         print(f"  copie gardée dans {cache} (réutilisable avec --osm)")
+        ways = list(ways_from_elements(elements))
 
-    ways = list(ways_from_elements(elements))
-    if not ways:
+        wide_ways = []
+        if wide_bbox and wide_scales:
+            ww, ws, we, wn = wide_bbox
+            print(
+                f"Axes majeurs (dézoom) Overpass pour {ww},{ws},{we},{wn} "
+                f"(échelles {wide_scales[0]}..{wide_scales[-1]})…"
+            )
+            try:
+                wide_el = fetch_overpass(
+                    wide_bbox,
+                    highways="motorway|trunk|primary|secondary",
+                )
+            except RuntimeError as exc:
+                print(f"\n{exc}", file=sys.stderr)
+                return 1
+            print(f"{len(wide_el)} éléments majeurs reçus")
+            wide_cache = ROOT / "logs" / f"osm-{args.name}-wide.json"
+            wide_cache.write_text(json.dumps({"elements": wide_el}), encoding="utf-8")
+            wide_ways = list(ways_from_elements(wide_el))
+
+    if not ways and not wide_ways:
         print("Aucune route trouvée — vérifie la zone.", file=sys.stderr)
         return 1
-    print(f"{len(ways)} voies")
+    print(f"{len(ways)} voies détail" + (f", {len(wide_ways)} voies majeures" if wide_ways else ""))
 
-    scales = list(range(args.max_scale + 1))
-    tiles = build_tiles(ways, scales)
-    print(f"{len(tiles)} tuiles sur {len(scales)} échelle(s)")
+    tiles: dict[int, TileBuilder] = {}
+    if detail_scales and ways:
+        tiles.update(build_tiles(ways, detail_scales))
+    if wide_scales and wide_ways:
+        tiles.update(build_tiles(wide_ways, wide_scales))
+
+    # Stubs : bbox détail pour les échelles fines, bbox large pour le dézoom.
+    before = len(tiles)
+    if detail_scales:
+        if args.bbox:
+            w, s, e, n = (float(v) for v in args.bbox.split(","))
+            detail_u = (
+                int(round(w * 1e6)),
+                int(round(s * 1e6)),
+                int(round(e * 1e6)),
+                int(round(n * 1e6)),
+            )
+        else:
+            lons = [c[0] for _, coords in ways for c in coords]
+            lats = [c[1] for _, coords in ways for c in coords]
+            detail_u = (min(lons), min(lats), max(lons), max(lats))
+        tiles = fill_bbox_tiles(tiles, detail_u, detail_scales)
+
+    if wide_bbox and wide_scales:
+        ww, ws, we, wn = wide_bbox
+        wide_u = (
+            int(round(ww * 1e6)),
+            int(round(ws * 1e6)),
+            int(round(we * 1e6)),
+            int(round(wn * 1e6)),
+        )
+        tiles = fill_bbox_tiles(tiles, wide_u, wide_scales)
+
+    print(
+        f"{before} tuiles avec routes, {len(tiles)} après stubs bbox "
+        f"({len(detail_scales)}+{len(wide_scales)} échelle(s))"
+    )
 
     timestamp = int(time.time())
     payloads = {tid: b.payload(timestamp) for tid, b in tiles.items()}
@@ -769,9 +1028,14 @@ def cmd_build(args) -> int:
             file=sys.stderr,
         )
 
-    lons = [c[0] for _, coords in ways for c in coords]
-    lats = [c[1] for _, coords in ways for c in coords]
-    bbox_u = (min(lons), min(lats), max(lons), max(lats))
+    # Bbox du paquet = union des bords de tuiles (gzm_locate filtre dessus).
+    edges = [tile_edges(tid) for tid in payloads]
+    bbox_u = (
+        min(e[0] for e in edges),
+        min(e[2] for e in edges),
+        max(e[1] for e in edges),
+        max(e[3] for e in edges),
+    )
 
     out = ROOT / "maps" / args.name / f"map{args.fips:05d}.wzm"
     write_wzm(out, payloads, bbox_u)
@@ -785,6 +1049,41 @@ def cmd_build(args) -> int:
     print(f"{index}")
     print(f"  index de carte, {index.stat().st_size} octets")
     print(f"\nLes deux fichiers vont ensemble :  sh maps.sh {args.name}")
+    return 0
+
+
+def cmd_build_minimal(args) -> int:
+    """Une tuile synthétique au centre GPS — test de non-régression sur l'iPhone."""
+    lon_u = int(round(args.lon * 1_000_000))
+    lat_u = int(round(args.lat * 1_000_000))
+    tid = tile_id(lon_u, lat_u, 0)
+    west, east, south, north, _ = tile_edges(tid)
+    builder = TileBuilder(tid)
+    base_lon, base_lat = west + 2000, south + 2000
+    # Une vraie polyligne (avec shapes) + quelques transversales.
+    snake = [(base_lon + k * 180, base_lat + k * 100) for k in range(31)]
+    builder.add_polyline(ROAD_PRIMARY, snake)
+    for k in range(0, 30, 5):
+        builder.add_polyline(
+            ROAD_STREET,
+            [
+                (base_lon + k * 180, base_lat + k * 100 - 800),
+                (base_lon + k * 180, base_lat + k * 100 + 800),
+            ],
+        )
+    ts = int(time.time())
+    payload = builder.payload(ts)
+    for problem in verify_tile(tid, payload):
+        print(f"  tuile {tid} : {problem}", file=sys.stderr)
+        return 1
+
+    out = ROOT / "maps" / args.name / f"map{args.fips:05d}.wzm"
+    write_wzm(out, {tid: payload}, (west, south, east, north))
+    index = out.parent / f"{args.fips:05d}_index.wdf"
+    index.write_bytes(county_index_tile(ts))
+    print(f"{out}  ({out.stat().st_size} octets, 1 tuile test)")
+    print(f"{index}")
+    print(f"  sh maps.sh {args.name}   ou   WAZE_MAP={args.name} sh phone.sh")
     return 0
 
 
@@ -812,15 +1111,35 @@ def main() -> int:
         help=f"identifiant de carte (défaut {WORLD_FIPS}, la carte monde de Waze)",
     )
     build.add_argument("--max-scale", type=int, default=2, help="échelles 0..N")
+    build.add_argument(
+        "--wide-bbox",
+        help="bbox élargie (ouest,sud,est,nord) pour les axes majeurs au dézoom",
+    )
+    build.add_argument(
+        "--wide-min-scale",
+        type=int,
+        default=2,
+        help="première échelle qui utilise --wide-bbox (défaut 2)",
+    )
+
+    def _build_wrapper(args):
+        if not args.bbox and not args.osm:
+            build.error("--bbox ou --osm est requis")
+        return cmd_build(args)
+
+    build.set_defaults(func=_build_wrapper)
+
+    mini = sub.add_parser("build-minimal", help="1 tuile synthétique (--lon/--lat)")
+    mini.add_argument("--lon", type=float, required=True)
+    mini.add_argument("--lat", type=float, required=True)
+    mini.add_argument("--name", default="minimal", help="dossier maps/<name>/")
+    mini.add_argument("--fips", type=int, default=WORLD_FIPS)
+    mini.set_defaults(func=cmd_build_minimal)
 
     args = parser.parse_args()
     if args.cmd == "selftest":
         return cmd_selftest()
-    if args.cmd == "build":
-        if not args.bbox and not args.osm:
-            parser.error("--bbox ou --osm est requis")
-        return cmd_build(args)
-    return 1
+    return args.func(args)
 
 
 if __name__ == "__main__":

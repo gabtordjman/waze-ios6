@@ -1,41 +1,73 @@
 #!/bin/sh
-# Patch Waze 3.9.6 — fonctionne sur iPhone 4 / 4S (auto-détecte le UUID).
+# Patch Waze 2.4 / 3.9 — iPhone 4 / 4S (détecte Waze.app ou waze.app).
 # Sur le téléphone :  sh /tmp/waze-patch.sh
-# Depuis le PC      :  scripts/patch-iphone.sh 192.168.1.60
+# Depuis le PC      :  sh phone.sh [IP]
 
 PC="${PC:-192.168.1.191}"
 
-if [ -n "$APP" ] && [ -d "$APP/Waze.app" ]; then
-  :
-else
-  APP=""
-  for d in /var/mobile/Applications/*/Waze.app; do
-    [ -d "$d" ] || continue
-    APP="${d%/Waze.app}"
-    break
+find_bundle() {
+  for base in \
+    /var/mobile/Applications \
+    /var/mobile/Containers/Bundle/Application \
+    /var/containers/Bundle/Application \
+    /Applications
+  do
+    [ -d "$base" ] || continue
+    for app in "$base"/*.app "$base"/*/*.app; do
+      [ -d "$app" ] || continue
+      name=$(basename "$app")
+      case "$name" in
+        [Ww][Aa][Zz][Ee]*)
+          echo "$app"
+          return 0
+          ;;
+      esac
+      if [ -f "$app/waze" ] || [ -f "$app/Waze" ]; then
+        echo "$app"
+        return 0
+      fi
+    done
   done
-  if [ -z "$APP" ]; then
-    APP=$(find /var/mobile/Applications -maxdepth 2 -type d -name Waze.app 2>/dev/null | head -1)
-    APP="${APP%/Waze.app}"
+  return 1
+}
+
+if [ -n "$APP" ] && [ -d "$APP/Waze.app" ]; then
+  BUNDLE_DIR="$APP/Waze.app"
+  CONTAINER="$APP"
+elif [ -n "$APP" ] && [ -d "$APP/waze.app" ]; then
+  BUNDLE_DIR="$APP/waze.app"
+  CONTAINER="$APP"
+else
+  BUNDLE_DIR=$(find_bundle) || true
+  if [ -n "$BUNDLE_DIR" ]; then
+    CONTAINER=$(dirname "$BUNDLE_DIR")
   fi
 fi
 
-[ -n "$APP" ] && [ -d "$APP/Waze.app" ] || {
-  echo "FAIL: Waze.app introuvable. Liste:"
+[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] || {
+  echo "FAIL: bundle Waze introuvable. Liste:"
   ls /var/mobile/Applications/ 2>/dev/null
   exit 1
 }
 
+if [ -f "$BUNDLE_DIR/waze" ]; then
+  BIN="$BUNDLE_DIR/waze"
+elif [ -f "$BUNDLE_DIR/Waze" ]; then
+  BIN="$BUNDLE_DIR/Waze"
+else
+  BIN=""
+fi
+
 echo "=== Waze patch ==="
-echo "APP=$APP"
+echo "BUNDLE=$BUNDLE_DIR"
 echo "PC=$PC"
 
-PREF=$APP/Documents/preferences
-BUNDLE=$APP/Waze.app/preferences
-USERF=$APP/Documents/user
-BIN=$APP/Waze.app/Waze
+PREF="$CONTAINER/Documents/preferences"
+BUNDLE="$BUNDLE_DIR/preferences"
+USERF="$CONTAINER/Documents/user"
+BUNDLE_MAPS="$BUNDLE_DIR/maps"
 
-killall -9 Waze 2>/dev/null
+killall -9 Waze waze 2>/dev/null
 
 [ -f "$BUNDLE" ] || { echo "FAIL: pas de bundle preferences"; exit 1; }
 [ -f "$PREF" ] || cp "$BUNDLE" "$PREF"
@@ -63,7 +95,15 @@ grep -v '^Download.Langs:' | \
 grep -v '^Download.Images:' | \
 grep -v '^Download.Sound:' | \
 grep -v '^Download.Langs TTS:' | \
+grep -v '^Download.Source:' | \
+grep -v '^Download.Enabled:' | \
+grep -v '^Download.Map name:' | \
+grep -v '^TTS.Feature Enabled:' | \
+grep -v '^Navigation.Navigation guidance on:' | \
+grep -v '^Navigation.Navigation guidance enabled:' | \
 grep -v '^Map.Static County:' | \
+grep -v '^Tiles.Last Session:' | \
+grep -v '^Tiles.Loading session lifetime:' | \
 grep -v 'Secho' | \
 grep -v 'Webho' > /tmp/wpref.n
 
@@ -82,16 +122,16 @@ echo "Realtime.Auto registration: Disabled" >> /tmp/wpref.n
 echo "Realtime.Name: ios6user" >> /tmp/wpref.n
 echo "Realtime.Password: ios6pass" >> /tmp/wpref.n
 echo "Realtime.Nickname: ios6user" >> /tmp/wpref.n
-echo "Download.Tiles: http://$PC/tiles" >> /tmp/wpref.n
+# Carte 100 % locale — pas de Download.Tiles (URLs /-0002_… si comté non activé).
 echo "Download.Config: http://$PC/resources/config/" >> /tmp/wpref.n
 echo "Download.Langs: http://$PC/resources/langs/" >> /tmp/wpref.n
 echo "Download.Images: http://$PC/resources/images/" >> /tmp/wpref.n
 echo "Download.Sound: http://$PC/resources/sounds/" >> /tmp/wpref.n
-echo "Download.Langs TTS: http://$PC/resources/lang_tts/" >> /tmp/wpref.n
-# 77001 = la carte monde de Waze (editor_main.c). Fixer le comte evite tout
-# l'annuaire des comtes americains : roadmap_county_by_position renvoie
-# directement ce numero, donc l'app ouvre notre carte des le premier ecran,
-# sans attendre la reponse GetGeoServerConfig.
+# Pas de Langs TTS (évite le blocage « Preparing navigation voice »).
+echo "TTS.Feature Enabled: no" >> /tmp/wpref.n
+echo "Navigation.Navigation guidance on: no" >> /tmp/wpref.n
+echo "Navigation.Navigation guidance enabled: no" >> /tmp/wpref.n
+echo "Download.Enabled: no" >> /tmp/wpref.n
 echo "Map.Static County: 77001" >> /tmp/wpref.n
 cp /tmp/wpref.n "$PREF"
 cp /tmp/wpref.n "$BUNDLE"
@@ -115,18 +155,82 @@ echo "Welcome Wizard.First time: iphone_no" >> /tmp/wuser.n
 echo "Welcome Wizard.Terms of Use accepted: yes" >> /tmp/wuser.n
 cp /tmp/wuser.n "$USERF"
 
-rm -f "$APP"/Documents/session*
-killall -9 Waze 2>/dev/null
+# ── Carte : index + .wzm dans le cache ; bundle/maps → lien vers le cache ───
+# roadmap_db_map_path() lit l'index dans bundle/maps (IPHONE).
+# roadmap_gzm_open() lit map*.wzm d'abord dans Library/Caches/maps.
+CACHE_MAPS=""
+if [ -f /tmp/waze-cache-maps.sh ]; then
+  CACHE_MAPS=$(sh /tmp/waze-cache-maps.sh "$CONTAINER" 2>/dev/null) || true
+fi
+if [ -z "$CACHE_MAPS" ]; then
+  CACHE_MAPS="$CONTAINER/Library/Caches/maps"
+fi
+mkdir -p "$CACHE_MAPS"
+echo "CACHE_MAPS=$CACHE_MAPS"
+
+# État corrompu : tuiles HTTP partielles, queue, SQLite, edt-0002 (comté -2).
+for root in \
+  "$CONTAINER/Documents/maps" \
+  "$CONTAINER/Library/maps" \
+  "$CACHE_MAPS" \
+  "$BUNDLE_MAPS"
+do
+  [ -d "$root/77001" ] && rm -rf "$root/77001" && echo "Tuiles supprimées: $root/77001"
+done
+rm -rf "$CACHE_MAPS/queue" "$CACHE_MAPS/77001"
+rm -f "$CACHE_MAPS/tiles_77001.db" "$CACHE_MAPS/city_index"
+rm -f "$CACHE_MAPS"/edt*.dat "$BUNDLE_MAPS"/edt*.dat 2>/dev/null
+find "$CONTAINER/Library/Caches" -path "*/77001/*" -name "*.wdf" 2>/dev/null \
+  | while read -r f; do rm -f "$f"; done
+
+if [ ! -f /tmp/77001_index.wdf ] || [ ! -f /tmp/map77001.wzm ]; then
+  echo "ERREUR: /tmp/77001_index.wdf et /tmp/map77001.wzm requis — relance phone.sh"
+  exit 1
+fi
+
+cp /tmp/77001_index.wdf "$CACHE_MAPS/77001_index.wdf"
+cp /tmp/map77001.wzm "$CACHE_MAPS/map77001.wzm"
+echo "Carte → $CACHE_MAPS ($(du -h "$CACHE_MAPS/map77001.wzm" | cut -f1))"
+
+# bundle/maps doit voir les mêmes fichiers (index lu ici par Waze).
+if [ -L "$BUNDLE_MAPS" ]; then
+  rm -f "$BUNDLE_MAPS"
+elif [ -d "$BUNDLE_MAPS" ]; then
+  rm -rf "$BUNDLE_MAPS"
+fi
+ln -sf "$CACHE_MAPS" "$BUNDLE_MAPS" 2>/dev/null || {
+  mkdir -p "$BUNDLE_MAPS"
+  cp "$CACHE_MAPS/77001_index.wdf" "$BUNDLE_MAPS/77001_index.wdf"
+  cp "$CACHE_MAPS/map77001.wzm" "$BUNDLE_MAPS/map77001.wzm"
+  echo "AVERTISSEMENT: lien symbolique impossible — copie directe dans bundle/maps"
+}
+
+# Propriétaire mobile (sinon l'app peut ignorer les fichiers injectés en root).
+if id mobile >/dev/null 2>&1; then
+  chown -R mobile:mobile "$CACHE_MAPS"
+  chown -h mobile:mobile "$BUNDLE_MAPS" 2>/dev/null || chown -R mobile:mobile "$BUNDLE_MAPS"
+fi
+chmod -R u+rwX,go+rX "$CACHE_MAPS" 2>/dev/null || true
+
+rm -f "$CONTAINER"/Documents/session*
+killall -9 Waze waze 2>/dev/null
 
 echo "=== VERIF ==="
 grep 'Status:' "$PREF"
-grep 'Auto registration' "$PREF"
-grep 'V2 ' "$PREF"
+grep 'Download.Enabled' "$PREF"
+grep 'Map.Static' "$PREF"
+grep '^Download.Tiles:' "$PREF" && echo "ERREUR: Download.Tiles encore actif" >&2 || echo "Download.Tiles: absent (OK)"
 grep '^Realtime.Name:' "$USERF"
-grep 'Wizard' "$USERF"
-grep 'Tiles' "$PREF"
-if [ -f "$BIN" ]; then
+echo "--- bundle/maps ---"
+ls -la "$BUNDLE_MAPS" 2>/dev/null || true
+echo "--- cache/maps ---"
+ls -la "$CACHE_MAPS" 2>/dev/null || true
+if id mobile >/dev/null 2>&1; then
+  su mobile -c "test -r '$CACHE_MAPS/77001_index.wdf' && test -r '$CACHE_MAPS/map77001.wzm'" \
+    && echo "Lecture mobile: OK" || echo "ERREUR: mobile ne peut pas lire la carte" >&2
+fi
+if [ -n "$BIN" ] && [ -f "$BIN" ]; then
   model=$(grep -a -o 'iPhone[0-9,]*' "$BIN" 2>/dev/null | head -1)
   echo "binary model hint: ${model:-unknown}"
 fi
-echo "DONE — iphone_no + ios6user/ios6pass. Relance Waze."
+echo "DONE — relance Waze."
