@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=proto150-20260824e
+"""CATCHER_REV=proto150-carte-20260824f
 
 Deux protocoles, deux stratégies — le catcher détecte lequel parle le client.
 
@@ -21,6 +21,10 @@ Deux protocoles, deux stratégies — le catcher détecte lequel parle le client
 
 Enveloppe : CRLF, et pour /distrib/ (V2) préfixe fil `ack\\r\\n` avant l'HTTP
 (cf. OnHTTPAck qui consomme strlen("ack\\r\\n")).
+
+Le routage se fait sur la commande, jamais sur l'URL : `RTNet_GetGeoConfig`
+ouvre sa transaction avec l'action "login", donc GetGeoServerConfig et Login
+arrivent tous deux sur /rtserver/login et seul le corps les distingue.
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-CATCHER_REV = "proto150-20260824e"
+CATCHER_REV = "proto150-carte-20260824f"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -276,30 +280,47 @@ def _note_login_proof(cmds: list[str], user_hint: str = "ios6user") -> None:
     _log("=" * 62)
 
 
-def _server_configs() -> list[str]:
+# Waze identifie sa carte mondiale par le numéro 77001 (editor_main.c,
+# editor_sync.c, roadmap_screen.c). En forçant Map.Static County on évite tout
+# l'annuaire des comtés américains : le client ouvre directement notre carte.
+WORLD_FIPS = 77001
+
+
+def _server_params() -> list[tuple[str, str, str]]:
     return [
-        f"ServerConfig,0,Download,Config,{BASE}/resources/config/",
-        f"ServerConfig,1,Download,Langs,{BASE}/resources/langs/",
-        f"ServerConfig,2,Download,Images,{BASE}/resources/images/",
-        f"ServerConfig,3,Download,Sound,{BASE}/resources/sounds/",
-        f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
-        f"ServerConfig,5,Download,Tiles,{BASE}/tiles/",
+        ("Download", "Config", f"{BASE}/resources/config/"),
+        ("Download", "Langs", f"{BASE}/resources/langs/"),
+        ("Download", "Images", f"{BASE}/resources/images/"),
+        ("Download", "Sound", f"{BASE}/resources/sounds/"),
+        ("Download", "Langs TTS", f"{BASE}/resources/lang_tts/"),
+        ("Download", "Tiles", f"{BASE}/tiles/"),
         # Paquets de carte hors-ligne : roadmap_map_download.c télécharge
         # <Download.Source>/<region>/map<fips:05d>.wzm puis appelle
-        # roadmap_tile_reset_session(). C'est la voie la plus simple pour
-        # afficher une vraie carte sans servir les tuiles une par une.
-        f"ServerConfig,6,Download,Source,{BASE}/maps",
-        "ServerConfig,7,Download,Enabled,yes",
+        # roadmap_tile_reset_session().
+        ("Download", "Source", f"{BASE}/maps"),
+        ("Download", "Enabled", "yes"),
+        ("Map", "Static County", str(WORLD_FIPS)),
     ]
 
 
-BODY_GEO5 = _lines(
-    [
-        "RC,200,OK",
-        "GeoServerConfig,1,world,eng,5,1",
-        *_server_configs(),
+def _body_geo() -> bytes:
+    """Réponse à GetGeoServerConfig.
+
+    `on_geo_server_config` lit <id>,<name>,<lang>,<nb_paramètres>,<version> puis
+    `on_server_config` compte les lignes reçues et n'appelle
+    `on_recieved_completed()` que lorsque le compte annoncé est atteint. Le
+    nombre doit donc coller exactement — d'où le calcul plutôt qu'un littéral.
+    """
+    rows = [
+        f"ServerConfig,{i},{cat},{key},{val}"
+        for i, (cat, key, val) in enumerate(_server_params())
     ]
-)
+    return _lines(
+        ["RC,200,OK", f"GeoServerConfig,1,world,eng,{len(rows)},1", *rows]
+    )
+
+
+BODY_GEO = _body_geo()
 BODY_REGISTER = _lines(["RC,200,OK", REGISTER_OK])
 BODY_RC = _lines(["RC,200,OK"])
 # VerifyStatus: 600 → err_as_could_not_find_matches (« aucun résultat », pas un crash)
@@ -393,37 +414,38 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     low = req_body.lower()
     pl = path.lower()
     cmds = _cmds(req_body)
+    cset = {c.lower() for c in cmds}
     _log(f"  cmds: {cmds}")
 
     _note_login_proof(cmds)
+    _note_map_displayed(req_body)
 
-    if (
-        "/login" in pl
-        or b"guestlogin" in low
-        or b"\nlogin," in low
-        or low.startswith(b"login,")
-        or any(c.lower() in ("login", "guestlogin") for c in cmds)
-    ):
+    # On route sur la commande, jamais sur l'URL : RTNet_GetGeoConfig ouvre sa
+    # transaction avec l'action "login" (RealtimeNet.c), donc GetGeoServerConfig
+    # arrive lui aussi sur /rtserver/login. Répondre LoginSuccessful à cette
+    # requête la fait échouer — geo_config_parser n'accepte que RC,
+    # GeoServerConfig, ServerConfig et UpdateConfig, sans handler par défaut.
+    if cset & {"getgeoserverconfig", "getgeoconfig"}:
+        _log(f"  req ({len(req_body)}B): {req_body!r}")
+        return "GetGeo→GeoServerConfig", BODY_GEO, False
+
+    if cset & {"login", "guestlogin"}:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         _note_proto_b64(req_body)
-        _note_map_displayed(req_body)
         name, body = _body_login(req_body)
         return f"Login→{name}", body, False
 
-    if b"register," in low:
+    if "register" in cset:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         return "Register→Freemap_userpass", BODY_REGISTER, False
 
-    if b"getgeoserverconfig" in low or b"getgeoconfig" in low:
-        return "GetGeo→geo5", BODY_GEO5, False
-
     # Recherche : RC,600 = « aucun résultat » côté client (évite le crash sur
     # une réponse vide que le parseur de résultats n'attend pas).
-    if any(c.lower() in SEARCH_CMDS for c in cmds) or "/search" in pl:
+    if cset & SEARCH_CMDS or "/search" in pl:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         return "Recherche→RC600 aucun résultat", BODY_NO_MATCH, False
 
-    if any(c.lower() in ROUTE_CMDS for c in cmds):
+    if cset & ROUTE_CMDS:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         return "Itinéraire→RC500 indisponible", BODY_UNAVAILABLE, False
 
@@ -699,6 +721,13 @@ def main() -> None:
     )
     _log("Succès = ★★★ LOGIN ACCEPTÉ (le client envoie At/SeeMe).")
     _log("Remise à zéro du balayage: rm logs/login-variant.txt")
+    _log(f"Carte annoncée: Map.Static County={WORLD_FIPS}.")
+    _log(
+        f"  Le téléphone doit avoir map{WORLD_FIPS:05d}.wzm ET {WORLD_FIPS:05d}"
+        "_index.wdf dans Waze.app/maps — sinon écran vide, sans erreur."
+    )
+    _log("  python3 scripts/wazemap.py build --bbox O,S,E,N --name <region>")
+    _log("  sh maps.sh <region>")
 
     http_sock = _bind_listen(http_port)
     https_sock = _bind_listen(https_port)

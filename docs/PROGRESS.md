@@ -39,10 +39,34 @@ sh scripts/patch-iphone.sh 192.168.1.61 # autre iPhone
 | Trafic HTTP `:80` `POST /rtserver/distrib/login` | OK |
 | Prefs `iphone_no` + creds → Login POST (plus Register) | OK |
 | `Download.*` → PC (icônes UI téléchargées) | OK — prouve que les prefs sont lues |
-| Login accepté → plus de « Searching network » | **balayage auto** (rev `login-sweep-20260824d`) |
-| GET tuiles | après login ; journalisé, 404 (pas de données de carte) |
+| Login accepté → plus de « Searching network » | 2.4.0.0 : réponse GPL exacte / 3.9.6 : balayage auto |
+| Routage `GetGeoServerConfig` vs `Login` | corrigé — tri sur la commande, plus sur l’URL |
+| Génération de carte OSM → `.wzm` + index | OK, `scripts/wazemap.py` |
+| Affichage de la carte sur l’appareil | à confirmer sur le téléphone |
+| GET tuiles | après login ; journalisé, 404 (les tuiles viennent du `.wzm`) |
 
-**Rev catcher :** `login-sweep-20260824d`
+**Rev catcher :** `proto150-carte-20260824f`
+
+### Le bug qui bloquait la 2.4.0.0
+
+`RTNet_GetGeoConfig` (`RealtimeNet.c`) ouvre sa transaction avec l’action
+`"login"` : `GetGeoServerConfig` arrive donc lui aussi sur `/rtserver/login`.
+Le catcher routait sur l’URL, voyait `/login`, et répondait `LoginSuccessful`.
+
+Or `geo_config_parser` n’accepte que quatre tags — `RC`, `GeoServerConfig`,
+`ServerConfig`, `UpdateConfig` — et **n’a pas d’entrée par défaut**, contrairement
+à `login_parser` qui se termine par `{ NULL, OnLoginResponse }`. Un tag inconnu
+rend `err_parser_missing_tag_handler` et la transaction est abandonnée. Le
+client n’atteignait jamais l’étape du vrai `Login`.
+
+Correctif : `_classify` teste la commande du corps avant tout, et l’URL ne sert
+plus qu’en dernier recours pour la recherche.
+
+Au passage, `on_geo_server_config` lit
+`<id>,<name>,<lang>,<nb_paramètres>,<version>`, et `on_server_config` ne
+déclenche `on_recieved_completed()` que lorsque le nombre de lignes reçues
+égale le nombre annoncé. Le catcher calcule donc ce nombre au lieu de le coder
+en dur.
 
 ### Pourquoi le login échouait (analyse source)
 
@@ -284,17 +308,67 @@ Le catcher annonce `ServerConfig,6,Download,Source,…` et
 `scripts/wazemap.py` produit ce fichier depuis OpenStreetMap. Tout ce qui suit
 est relevé dans la source, pas déduit.
 
+### L’index de carte, sans lequel rien ne s’affiche
+
+C’est la pièce qui manquait. `roadmap_locator.c` :
+
+```c
+while (! roadmap_db_open (fips, -1, RoadMapCountyModel, "r")) {
+   if (! RoadMapDownload (fips)) return ROADMAP_US_NOMAP;
+}
+snprintf (gzm_name, sizeof(gzm_name), "map%05d%s", fips, ROADMAP_GZM_TYPE);
+RoadMapCountyCache[oldest].gzm_id = roadmap_gzm_open (gzm_name);
+```
+
+L’index passe **avant** le paquet. Tant qu’il manque, `roadmap_locator_open`
+rend `ROADMAP_US_NOMAP` et le `.wzm` n’est jamais ouvert — écran vide, aucune
+erreur visible. `get_tile_filename` avec `tile_index == -1`
+(`roadmap_tile_storage.c`) donne son nom : `<fips:05d>_index.wdf`.
+
+Contenu, d’après `roadmap_county_model.h` et `roadmap_square_map` :
+
+| Section | Nom | Lue ? |
+|---|---|---|
+| 0 | `county_global_data` | oui — un `RoadMapGlobal`, soit 4 octets d’horodatage |
+| 1 | `county_global_scale` | non |
+| 2 | `county_global_grid` | non |
+| 3 | `county_global_bitmask` | non |
+
+`roadmap_square_map` traite l’échec de `roadmap_db_get_data` en `ROADMAP_FATAL`,
+et la taille doit être un multiple exact de `sizeof(RoadMapGlobal)`. Les carrés
+eux-mêmes ne sont pas décrits ici : ils sont découverts tuile par tuile dans le
+`.wzm` (`roadmap_square_load` → `roadmap_gzm_get_section`).
+
+À noter pour le dépannage : si le fichier est mal formé, `roadmap_db_open`
+appelle `roadmap_tile_remove` — l’index **disparaît** du téléphone. Un fichier
+qui s’efface tout seul est donc le signe d’un format invalide, pas d’un
+problème de copie.
+
+### Numéro de carte
+
+`77001` est la carte mondiale de Waze (`editor_main.c`, `editor_sync.c`,
+`roadmap_screen.c` sous J2ME). La préférence `Map.Static County` court-circuite
+l’annuaire des comtés : `roadmap_county_by_position` la renvoie telle quelle
+quand aucun annuaire n’est chargé. Le catcher la pousse par `ServerConfig`, et
+`scripts/waze-patch.sh` l’écrit aussi dans les préférences pour qu’elle
+s’applique avant même le premier échange réseau.
+
 ### Emplacement sur l’appareil
 
-`unix/roadmap_path.c`, avec `HOME_PREFIX` vide sous `IPHONE` :
+Deux chemins différents, et c’est le piège :
 
-```
-prefere : roadmap_path_cache()  + "/maps"     (# dans la table)
-repli   : roadmap_path_bundle() + "/maps"     (+ dans la table)
-```
+| Fichier | Chemin | Source |
+|---|---|---|
+| `<fips>_index.wdf` | `roadmap_db_map_path()` = `bundle + "/maps"` | `roadmap_dbread.c` |
+| `map<fips>.wzm` | premier trouvé dans la liste `maps` | `roadmap_gzm_open` |
 
-`scripts/waze-maps-dir.sh` cherche le dossier réel sur le téléphone plutôt que
-de coder ces chemins en dur — ils changent selon la version d’iOS.
+Sous `IPHONE`, `HOME_PREFIX` est vide (`unix/roadmap_path.c`) et la liste `maps`
+vaut `["<cache>/maps", "<bundle>/maps"]`. Le dossier du bundle satisfait donc
+les deux à la fois, et `roadmap_main_bundle_path()` renvoie
+`[[NSBundle mainBundle] resourcePath]`, c’est-à-dire `Waze.app` lui-même.
+
+`scripts/waze-maps-dir.sh` résout `Waze.app/maps` sur le téléphone et le crée au
+besoin, plutôt que de coder en dur un UUID de conteneur.
 
 ### Conteneur `.wzm` (roadmap_data_format.h, roadmap_gzm.c)
 

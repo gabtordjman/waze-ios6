@@ -1,11 +1,13 @@
 #!/bin/sh
-# Envoie une carte .wzm sur l'iPhone :  sh maps.sh <region> [IP]
+# Envoie une carte sur l'iPhone :  sh maps.sh <region> [IP]
 #
 #   python3 scripts/wazemap.py build --bbox 6.42,46.33,6.56,46.40 --name leman
 #   sh maps.sh leman
 #
-# Le dossier cible est decouvert sur l'appareil (scripts/waze-maps-dir.sh),
-# pas devine : il change selon la version d'iOS et l'app installee.
+# Deux fichiers partent ensemble : le paquet map<fips>.wzm et son index
+# <fips>_index.wdf. Le dossier cible est decouvert sur l'appareil
+# (scripts/waze-maps-dir.sh), pas devine : le chemin du bundle change a chaque
+# installation.
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT" || exit 1
 
@@ -34,6 +36,16 @@ if [ -z "$WZM" ]; then
   exit 1
 fi
 
+# L'index part avec le paquet. roadmap_locator_open ouvre <fips>_index.wdf
+# avant de toucher au .wzm : sans lui la carte reste invisible, sans erreur.
+IDX="$(ls -1 "$SRC"/*_index.wdf 2>/dev/null | head -n 1)"
+if [ -z "$IDX" ]; then
+  echo "ERREUR: aucun *_index.wdf dans $SRC"
+  echo "Regenere la carte, l'index est produit avec le paquet :"
+  echo "  python3 scripts/wazemap.py build --bbox O,S,E,N --name $REGION"
+  exit 1
+fi
+
 sed -i 's/\r$//' scripts/waze-maps-dir.sh 2>/dev/null || true
 
 SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o StrictHostKeyChecking=accept-new"
@@ -41,7 +53,8 @@ KH="$HOME/.ssh/known_hosts"
 [ "$(id -u)" = "0" ] && [ -f /root/.ssh/known_hosts ] && KH=/root/.ssh/known_hosts
 ssh-keygen -f "$KH" -R "$PHONE" 2>/dev/null || true
 
-echo "=== Envoi de $(basename "$WZM") ($(du -h "$WZM" | cut -f1)) vers $PHONE ==="
+echo "=== Envoi de $(basename "$WZM") ($(du -h "$WZM" | cut -f1))"
+echo "         et $(basename "$IDX") vers $PHONE ==="
 
 DEST="$(sed 's/\r$//' scripts/waze-maps-dir.sh \
   | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-maps-dir.sh && sh /tmp/waze-maps-dir.sh")"
@@ -52,7 +65,7 @@ if [ -z "$DEST" ]; then
 fi
 echo "Dossier cible: $DEST"
 
-scp $SSH_OPTS "$WZM" "root@${PHONE}:${DEST}/" || exit 1
+scp $SSH_OPTS "$WZM" "$IDX" "root@${PHONE}:${DEST}/" || exit 1
 
 ssh $SSH_OPTS "root@${PHONE}" "ls -l '$DEST'"
 

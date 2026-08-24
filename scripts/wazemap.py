@@ -11,14 +11,17 @@ Tout le format vient de la source GPL (github.com/mkoloberdin/waze, branche
   roadmap_db_*.h         structures binaires de chaque section
   roadmap_point.h        position = bord SO du carré + offset16 × facteur
   roadmap_line.c         index cumulatif par catégorie (lignes triées)
+  roadmap_county_model.h les quatre sections du fichier d'index
+  roadmap_locator.c      l'index s'ouvre avant le paquet, sinon rien ne charge
 
 Usage :
     python3 scripts/wazemap.py selftest
     python3 scripts/wazemap.py build --bbox 6.55,46.50,6.70,46.56 --name lausanne
-    python3 scripts/wazemap.py build --osm data/region.osm --name boston --fips 25025
+    python3 scripts/wazemap.py build --osm data/region.osm --name boston
 
-Le résultat est un unique fichier `maps/<name>/map<fips>.wzm`, que Waze
-télécharge via `Download.Source` ou qu'on dépose directement sur l'iPhone.
+Deux fichiers sortent dans `maps/<name>/` et voyagent ensemble :
+`map<fips>.wzm`, le paquet de tuiles, et `<fips>_index.wdf`, l'index que
+roadmap_locator_open exige avant même de regarder le paquet.
 """
 
 from __future__ import annotations
@@ -72,6 +75,15 @@ S_ALERT_DATA = 25
 S_SQUARE_DATA = 26
 S_METADATA_ATTRIBUTES = 27
 NUM_SECTIONS = 28  # model__tile
+
+# Modèle « comté » (roadmap_county_model.h) : l'index global de la carte.
+COUNTY_GLOBAL_DATA = 0
+COUNTY_NUM_SECTIONS = 4  # model__county
+
+# Waze appelle sa carte mondiale 77001 (editor_main.c, editor_sync.c). En
+# gardant ce numéro, la préférence Map.Static County poussée par le catcher
+# suffit à faire ouvrir notre carte, sans annuaire de comtés américains.
+WORLD_FIPS = 77001
 
 ALIGN_BITS = 2  # structures alignées sur 4 octets
 
@@ -180,22 +192,39 @@ def tile_edges(tid: int) -> tuple[int, int, int, int, int]:
 
 
 # ── Écriture binaire ─────────────────────────────────────────────────────────
-def pack_payload(sections: dict[int, bytes]) -> bytes:
-    """En-tête + index des 28 sections + données, comme roadmap_db_fill_data."""
+def pack_payload(sections: dict[int, bytes], num_sections: int = NUM_SECTIONS) -> bytes:
+    """En-tête + index des sections + données, comme roadmap_db_fill_data."""
     add = (1 << ALIGN_BITS) - 1
     data = bytearray()
     ends: list[int] = []
     offset = 0
-    for i in range(NUM_SECTIONS):
+    for i in range(num_sections):
         blob = sections.get(i, b"")
         data.extend(b"\0" * (offset - len(data)))
         data.extend(blob)
         end = offset + len(blob)
         ends.append(end)
         offset = (end + add) & ~add
-    head = struct.pack("<II", NUM_SECTIONS, ALIGN_BITS)
+    head = struct.pack("<II", num_sections, ALIGN_BITS)
     index = b"".join(struct.pack("<I", e) for e in ends)
     return head + index + bytes(data)
+
+
+def county_index_tile(timestamp: int | None = None) -> bytes:
+    """Le fichier `<fips>_index.wdf`, sans lequel la carte n'est jamais ouverte.
+
+    roadmap_locator_open ouvre d'abord la tuile -1 sous RoadMapCountyModel ; ce
+    n'est qu'ensuite qu'il appelle roadmap_gzm_open sur le .wzm. Si l'index
+    manque, la boucle `while (!roadmap_db_open (fips, -1, ...))` rend
+    ROADMAP_US_NOMAP et le paquet de cartes n'est même pas regardé.
+
+    Le modèle « comté » compte quatre sections (roadmap_county_model.h) et
+    roadmap_square_map n'en lit qu'une : global_data, un RoadMapGlobal, soit un
+    seul entier non signé. Les trois autres (scale, grid, bitmask) restent vides
+    — les carrés sont découverts tuile par tuile via le .wzm.
+    """
+    global_data = struct.pack("<I", timestamp if timestamp is not None else int(time.time()))
+    return pack_tile(pack_payload({COUNTY_GLOBAL_DATA: global_data}, COUNTY_NUM_SECTIONS))
 
 
 def pack_tile(payload: bytes) -> bytes:
@@ -530,6 +559,16 @@ def cmd_selftest() -> int:
     print(f"  {out.name}: {info['num_tiles']} tuile, {info['size']} octets  OK")
     out.unlink()
 
+    print("Contrôle de l'index de carte (roadmap_square_map)")
+    idx = read_tile(county_index_tile(1234567890))
+    assert idx["num_sections"] == COUNTY_NUM_SECTIONS, idx["num_sections"]
+    global_data = idx["sections"][COUNTY_GLOBAL_DATA]
+    # roadmap_db_get_data échoue si la taille n'est pas un multiple exact de
+    # sizeof(RoadMapGlobal), et roadmap_square_map traite l'échec en FATAL.
+    assert len(global_data) == 4, len(global_data)
+    assert struct.unpack("<I", global_data)[0] == 1234567890
+    print(f"  {COUNTY_NUM_SECTIONS} sections, global_data {len(global_data)} octets  OK")
+
     print("\nTous les contrôles passent.")
     return 0
 
@@ -564,9 +603,15 @@ def cmd_build(args) -> int:
     out = ROOT / "maps" / args.name / f"map{args.fips:05d}.wzm"
     write_wzm(out, payloads, bbox_u)
     info = read_wzm(out)
+
+    index = out.parent / f"{args.fips:05d}_index.wdf"
+    index.write_bytes(county_index_tile(timestamp))
+
     print(f"\n{out}")
     print(f"  {info['num_tiles']} tuiles, {info['size'] / 1024:.1f} Kio — relecture OK")
-    print(f"  À déposer sur l'iPhone dans maps/, ou servir via {args.name}/")
+    print(f"{index}")
+    print(f"  index de carte, {index.stat().st_size} octets")
+    print(f"\nLes deux fichiers vont ensemble :  sh maps.sh {args.name}")
     return 0
 
 
@@ -587,7 +632,12 @@ def main() -> int:
     build.add_argument("--bbox", help="ouest,sud,est,nord en degrés")
     build.add_argument("--osm", help="fichier JSON Overpass déjà téléchargé")
     build.add_argument("--name", required=True, help="nom de région (dossier)")
-    build.add_argument("--fips", type=int, default=0, help="identifiant de carte")
+    build.add_argument(
+        "--fips",
+        type=int,
+        default=WORLD_FIPS,
+        help=f"identifiant de carte (défaut {WORLD_FIPS}, la carte monde de Waze)",
+    )
     build.add_argument("--max-scale", type=int, default=2, help="échelles 0..N")
 
     args = parser.parse_args()

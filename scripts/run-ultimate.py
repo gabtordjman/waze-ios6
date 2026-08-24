@@ -11,8 +11,6 @@ import sys
 import time
 from pathlib import Path
 
-CATCHER_REV = "login-sweep-20260824d"
-
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CATCHER = HERE / "rts_catcher_min.py"
@@ -21,6 +19,14 @@ DNS_SCRIPT = HERE / "run-dns-sinkhole.sh"
 
 if not CATCHER.is_file():
     sys.exit(f"ERREUR: {CATCHER} introuvable")
+
+# Une seule source de vérité : on lit la révision dans le catcher plutôt que
+# d'en garder une copie qui finit toujours par diverger.
+CATCHER_REV = "inconnue"
+for _line in CATCHER.read_text(encoding="utf-8").splitlines():
+    if _line.startswith("CATCHER_REV = "):
+        CATCHER_REV = _line.split("=", 1)[1].strip().strip('"')
+        break
 
 os.environ["CATCHER_CTYPE"] = "binary/octet-stream"
 os.environ.setdefault("CATCHER_HTTP_PORT", "80")

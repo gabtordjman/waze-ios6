@@ -27,6 +27,10 @@ On y lit directement :
 | Identifiant d’une tuile | `roadmap_tile.c` | `base + lon×lignes + lat` |
 | Format d’une tuile | `roadmap_data_format.h` | `WZDF` + zlib + 28 sections |
 | Format d’un paquet de région | `roadmap_gzm.c` | `WGZM` + index trié |
+| Ce qui ouvre une carte | `roadmap_locator.c` | l’index `<fips>_index.wdf` d’abord, le `.wzm` ensuite |
+| Sections de l’index | `roadmap_county_model.h` | quatre, dont une seule est lue |
+| Où chercher ces fichiers | `roadmap_dbread.c` | `bundle/maps`, soit `Waze.app/maps` |
+| Numéro de la carte mondiale | `editor_main.c` | `77001` |
 
 ### Le login
 
@@ -41,6 +45,13 @@ Le catcher **détecte le protocole tout seul**, il n’y a aucun réglage :
 |---------------|------|
 | `Login,150,<user>,…` (protocole en tête) | réponse GPL exacte, login OK du 1er coup |
 | `ClientInfo,202,…` puis `Login,<user>,…` | balayage de 16 formats candidats (3.9.6) |
+
+Le tri se fait sur la commande, jamais sur l’URL. `RTNet_GetGeoConfig` ouvre sa
+transaction avec l’action `"login"`, donc `GetGeoServerConfig` et `Login`
+arrivent tous deux sur `/rtserver/login` ; seul le corps les distingue. Router
+sur le chemin faisait répondre `LoginSuccessful` à une demande de config, que
+`geo_config_parser` rejette faute de gestionnaire par défaut — le client
+restait bloqué avant même d’essayer de se connecter.
 
 ---
 
@@ -64,9 +75,22 @@ python3 scripts/wazemap.py build --bbox 6.42,46.33,6.56,46.40 --name leman
 sh maps.sh boston
 ```
 
-Le résultat est un unique fichier `maps/<région>/map00000.wzm`. Waze sait aussi
-le télécharger tout seul : le catcher annonce `Download.Source` et sert le
-dossier `maps/`.
+Deux fichiers sortent dans `maps/<région>/`, et ils voyagent toujours ensemble :
+
+| Fichier | Rôle |
+|---------|------|
+| `map77001.wzm` | le paquet de tuiles |
+| `77001_index.wdf` | l’index, lu **avant** le paquet |
+
+L’index n’est pas un détail : `roadmap_locator_open` boucle sur
+`roadmap_db_open (fips, -1, RoadMapCountyModel)` et ne regarde le `.wzm`
+qu’ensuite. Sans lui, la carte reste vide sans le moindre message d’erreur.
+Son contenu est minuscule — quatre sections dont une seule est lue, un entier
+d’horodatage.
+
+`77001` est le numéro que Waze donne à sa carte mondiale (`editor_main.c`).
+Le catcher pousse `Map.Static County,77001`, ce qui court-circuite l’annuaire
+des comtés américains : l’app ouvre notre carte directement.
 
 Comment ça marche, en bref : chaque route OSM est découpée aux frontières de
 tuiles, chaque tuile devient une base RoadMap compressée (points en 16 bits
@@ -78,6 +102,11 @@ voisine. Détails dans `docs/PROGRESS.md`.
 Options utiles : `--max-scale N` (échelles 0..N ; les échelles grossières ne
 gardent que les grands axes), `--osm fichier.json` pour repartir d’un export
 Overpass déjà téléchargé, `--fips` pour changer le numéro de carte.
+
+Les deux fichiers atterrissent dans `Waze.app/maps` sur le téléphone. Ce n’est
+pas un choix : sous iPhone, `roadmap_db_map_path()` vaut
+`roadmap_main_bundle_path() + "/maps"`, et c’est le seul endroit où l’index est
+cherché.
 
 ---
 

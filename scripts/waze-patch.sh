@@ -63,6 +63,7 @@ grep -v '^Download.Langs:' | \
 grep -v '^Download.Images:' | \
 grep -v '^Download.Sound:' | \
 grep -v '^Download.Langs TTS:' | \
+grep -v '^Map.Static County:' | \
 grep -v 'Secho' | \
 grep -v 'Webho' > /tmp/wpref.n
 
@@ -87,6 +88,11 @@ echo "Download.Langs: http://$PC/resources/langs/" >> /tmp/wpref.n
 echo "Download.Images: http://$PC/resources/images/" >> /tmp/wpref.n
 echo "Download.Sound: http://$PC/resources/sounds/" >> /tmp/wpref.n
 echo "Download.Langs TTS: http://$PC/resources/lang_tts/" >> /tmp/wpref.n
+# 77001 = la carte monde de Waze (editor_main.c). Fixer le comte evite tout
+# l'annuaire des comtes americains : roadmap_county_by_position renvoie
+# directement ce numero, donc l'app ouvre notre carte des le premier ecran,
+# sans attendre la reponse GetGeoServerConfig.
+echo "Map.Static County: 77001" >> /tmp/wpref.n
 cp /tmp/wpref.n "$PREF"
 cp /tmp/wpref.n "$BUNDLE"
 
