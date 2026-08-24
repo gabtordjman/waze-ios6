@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=login-gpl11-min-20260824b
+"""CATCHER_REV=login-sweep-20260824d
 
-Freemap login_parser (RealtimeNetRec.c):
-  - OnLoginResponse: exactly 11 CSV fields after tag, then bLoggedIn=TRUE
-  - Extra CSV on same line poisons the parser → login retry
-  - Separate tagged lines OK: UpdateInboxCount (ServerConfig removed from login —
-    phone prefs already have Download.* URLs; ServerConfig during login can confuse
-    geo_config context)
+Le client iOS 3.9.6 annonce ClientInfo,202 ; la seule source GPL publique
+(mkoloberdin/waze) est en protocole 150. OnLoginResponse y lit 11 champs, mais
+la 202 en attend un nombre différent — non documenté et introuvable en ligne.
 
-Response uses CRLF. V2 /distrib/ → wire prefix ack\\r\\n before HTTP.
+Conséquence côté client (websvc_trans.c / RealtimeNetRec.c) :
+  - trop peu de champs  → err_parser_unexpected_data
+  - trop de champs      → le reste de la ligne est lu comme un tag inconnu
+                          → err_parser_missing_tag_handler
+Dans les deux cas trans_failed → OnLoginResult échoue → nouveau Login.
+
+D'où le balayage automatique des formats candidats (voir _variants).
+
+Enveloppe : CRLF, et pour /distrib/ (V2) préfixe fil `ack\\r\\n` avant l'HTTP
+(cf. OnHTTPAck qui consomme strlen("ack\\r\\n")).
 """
 
 from __future__ import annotations
@@ -18,12 +24,13 @@ import datetime as dt
 import os
 import socket
 import ssl
+import sys
 import threading
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-CATCHER_REV = "login-gpl11-min-20260824b"
+CATCHER_REV = "login-sweep-20260824d"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -38,33 +45,163 @@ PC_IP = os.environ.get("PC_IP", "192.168.1.191").strip()
 BASE = f"http://{PC_IP}"
 BIN_CT = "binary/octet-stream"
 
-# 11 fields after LoginSuccessful — stop at ver (no PAD tail on same line).
 REGISTER_OK = "RegisterSuccessful,ios6user,ios6pass"
 
+# Le client est en protocole 202 ; la seule source GPL publique est en 150.
+# OnLoginResponse lit un nombre FIXE de champs : trop peu → err_parser_unexpected_data,
+# trop → le reste de la ligne devient un faux tag (err_parser_missing_tag_handler).
+# Dans les deux cas la transaction échoue et le client relance Login.
+# On ne peut pas deviner ce nombre pour la 202 → on le cherche automatiquement.
+VARIANT_FILE = ROOT / "logs" / "login-variant.txt"
 
-def _login_line(req_body: bytes) -> str:
-    """Build LoginSuccessful; reuse ios6user from request when present."""
-    user = "ios6user"
-    for line in req_body.replace(b"\r\n", b"\n").split(b"\n"):
-        if line.lower().startswith(b"login,"):
-            parts = line.decode("latin1", errors="replace").split(",")
-            if len(parts) > 1 and parts[1].strip():
-                user = parts[1].strip()
-            break
-    cookie = f"waze{user}cookie01"
-    return f"LoginSuccessful,1,{cookie},1,100,1,1,0,0,0,202,3.9.6.1"
+# Commandes qui ne partent QUE si bLoggedIn == TRUE → preuve de login accepté.
+PROOF_CMDS = {
+    "at",
+    "seeme",
+    "gpspath",
+    "nodepath",
+    "createnewroads",
+    "reportalert",
+    "setmood",
+    "getuserinfo",
+    "requestroute",
+}
 
 
 def _log(msg: str) -> None:
     LOG.parent.mkdir(parents=True, exist_ok=True)
     line = f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
-    print(line, flush=True)
-    with LOG.open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        # Console en latin-1/ascii (sudo sans locale UTF-8) : ne jamais tuer le thread.
+        enc = sys.stdout.encoding or "ascii"
+        print(line.encode(enc, "replace").decode(enc, "replace"), flush=True)
+    try:
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def _lines(rows: list[str]) -> bytes:
     return ("\r\n".join(rows) + "\r\n").encode("ascii")
+
+
+def _req_user(req_body: bytes) -> str:
+    for line in req_body.replace(b"\r\n", b"\n").split(b"\n"):
+        if line.lower().startswith(b"login,"):
+            parts = line.decode("latin1", errors="replace").split(",")
+            if len(parts) > 1 and parts[1].strip():
+                return parts[1].strip()
+    return "ios6user"
+
+
+def _variants(user: str) -> list[tuple[str, list[str]]]:
+    """Formats candidats pour LoginSuccessful, du plus probable au plus exotique."""
+    cookie = f"waze{user}cookie01"
+    # id, cookie, rank, points, rating, prevRank, addon, pointsTs, moods, maxProto
+    head = f"1,{cookie},1,100,1,1,0,0,0,202"
+    ver = "3.9.6.1"
+    out: list[tuple[str, list[str]]] = []
+
+    out.append(("gpl11-seul", [f"LoginSuccessful,{head},{ver}"]))
+    out.append(("gpl11+inbox", [f"LoginSuccessful,{head},{ver}", "UpdateInboxCount,0"]))
+
+    # Champs entiers ajoutés APRÈS la version (protocole plus récent).
+    for n in range(1, 7):
+        tail = "," + ",".join(["0"] * n)
+        out.append((f"ver+{n}int", [f"LoginSuccessful,{head},{ver}{tail}"]))
+
+    # Champs entiers ajoutés AVANT la version.
+    for n in range(1, 5):
+        mid = "," + ",".join(["0"] * n)
+        out.append((f"{n}int+ver", [f"LoginSuccessful,{head}{mid},{ver}"]))
+
+    # Variantes « IPA » historiques (id utilisateur / nickname après la version).
+    out.append(
+        ("ipa17", [f"LoginSuccessful,{head},{ver},1,{user},0,1360000000,0,{user}"])
+    )
+    out.append(
+        (
+            "ipa17+pad",
+            [f"LoginSuccessful,{head},{ver},1,{user},0,1360000000,0,{user},0,0,0,0,0,F,F"],
+        )
+    )
+    out.append(("ver+user", [f"LoginSuccessful,{head},{ver},{user}"]))
+    out.append(("ver+8int", [f"LoginSuccessful,{head},{ver}," + ",".join(["0"] * 8)]))
+    return out
+
+
+_LOGIN = {
+    "idx": 0,
+    "last_advance": 0.0,
+    "locked": False,
+    "count": 0,
+}
+
+
+def _load_locked_variant() -> None:
+    forced = os.environ.get("LOGIN_VARIANT", "").strip()
+    if not forced and VARIANT_FILE.is_file():
+        forced = VARIANT_FILE.read_text(encoding="utf-8").strip()
+        if forced:
+            _LOGIN["locked"] = True
+    if not forced:
+        return
+    names = [n for n, _ in _variants("ios6user")]
+    if forced.isdigit():
+        _LOGIN["idx"] = int(forced) % len(names)
+    elif forced in names:
+        _LOGIN["idx"] = names.index(forced)
+    if os.environ.get("LOGIN_VARIANT", "").strip():
+        _LOGIN["locked"] = True
+    _log(f"  variante login figée: {names[_LOGIN['idx']]}")
+
+
+def _body_login(req_body: bytes) -> tuple[str, bytes]:
+    user = _req_user(req_body)
+    variants = _variants(user)
+    now = time.time()
+
+    # Nouveau Login = la variante précédente a échoué → on passe à la suivante.
+    if (
+        not _LOGIN["locked"]
+        and _LOGIN["count"] > 0
+        and now - float(_LOGIN["last_advance"]) > 6.0
+    ):
+        _LOGIN["idx"] = (int(_LOGIN["idx"]) + 1) % len(variants)
+        _LOGIN["last_advance"] = now
+    elif _LOGIN["count"] == 0:
+        _LOGIN["last_advance"] = now
+
+    _LOGIN["count"] = int(_LOGIN["count"]) + 1
+    idx = int(_LOGIN["idx"])
+    name, rows = variants[idx]
+    state = "FIGÉE" if _LOGIN["locked"] else f"essai {idx + 1}/{len(variants)}"
+    _log(f"  variante login [{state}] {name}")
+    for r in rows:
+        _log(f"    {r}")
+    return name, _lines(["RC,200,OK", *rows])
+
+
+def _note_login_proof(cmds: list[str], user_hint: str = "ios6user") -> None:
+    if _LOGIN["locked"]:
+        return
+    hit = [c for c in cmds if c.lower() in PROOF_CMDS]
+    if not hit:
+        return
+    name = _variants(user_hint)[int(_LOGIN["idx"])][0]
+    _LOGIN["locked"] = True
+    try:
+        VARIANT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        VARIANT_FILE.write_text(name, encoding="utf-8")
+    except Exception:
+        pass
+    _log("=" * 62)
+    _log(f"  ★★★ LOGIN ACCEPTÉ — variante « {name} » (commande {hit[0]})")
+    _log(f"  Variante mémorisée dans {VARIANT_FILE}")
+    _log("=" * 62)
 
 
 def _server_configs() -> list[str]:
@@ -87,10 +224,21 @@ BODY_GEO5 = _lines(
 )
 BODY_REGISTER = _lines(["RC,200,OK", REGISTER_OK])
 BODY_RC = _lines(["RC,200,OK"])
+# VerifyStatus: 600 → err_as_could_not_find_matches (« aucun résultat », pas un crash)
+BODY_NO_MATCH = _lines(["RC,600,No matches"])
+# 500 → err_failed : échec propre côté client au lieu d'un parseur qui déraille
+BODY_UNAVAILABLE = _lines(["RC,500,Service unavailable"])
 
-
-def _body_login(req_body: bytes) -> bytes:
-    return _lines(["RC,200,OK", _login_line(req_body), "UpdateInboxCount,0"])
+SEARCH_CMDS = {
+    "addresssearch",
+    "search",
+    "foursquaresearch",
+    "getpoibyaddress",
+    "localsearch",
+    "autocomplete",
+    "getautocomplete",
+}
+ROUTE_CMDS = {"routingrequest", "requestroute", "navigate", "getroute"}
 
 
 def _cmds(req_body: bytes) -> list[str]:
@@ -126,6 +274,8 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     cmds = _cmds(req_body)
     _log(f"  cmds: {cmds}")
 
+    _note_login_proof(cmds)
+
     if (
         "/login" in pl
         or b"guestlogin" in low
@@ -135,9 +285,8 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     ):
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         _note_proto_b64(req_body)
-        body = _body_login(req_body)
-        _log(f"  login line: {_login_line(req_body)}")
-        return "Login→GPL11+Inbox+keepalive", body, False
+        name, body = _body_login(req_body)
+        return f"Login→{name}", body, False
 
     if b"register," in low:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
@@ -146,33 +295,32 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     if b"getgeoserverconfig" in low or b"getgeoconfig" in low:
         return "GetGeo→geo5", BODY_GEO5, False
 
-    # Post-login batch (At, Stats, MapDisplayed, …) — RC,200,OK suffices
-    if any(
-        c.lower()
-        in (
-            "at",
-            "stats",
-            "mapdisplayed",
-            "location",
-            "keepalive",
-            "routingrequest",
-            "addresssearch",
-            "foursquaresearch",
-            "search",
-        )
-        for c in cmds
-    ):
-        return "Realtime batch→RC", BODY_RC, False
+    # Recherche : RC,600 = « aucun résultat » côté client (évite le crash sur
+    # une réponse vide que le parseur de résultats n'attend pas).
+    if any(c.lower() in SEARCH_CMDS for c in cmds) or "/search" in pl:
+        _log(f"  req ({len(req_body)}B): {req_body!r}")
+        return "Recherche→RC600 aucun résultat", BODY_NO_MATCH, False
 
-    return "RC only", BODY_RC, False
+    if any(c.lower() in ROUTE_CMDS for c in cmds):
+        _log(f"  req ({len(req_body)}B): {req_body!r}")
+        return "Itinéraire→RC500 indisponible", BODY_UNAVAILABLE, False
+
+    return "Realtime→RC200", BODY_RC, False
 
 
-def _http_envelope(body: bytes, *, ack: bytes, close: bool, ctype: str | None = None) -> bytes:
+def _http_envelope(
+    body: bytes,
+    *,
+    ack: bytes,
+    close: bool,
+    ctype: str | None = None,
+    status: str = "200 OK",
+) -> bytes:
     ver = os.environ.get("CATCHER_HTTP_VER", "1.1")
     ct = ctype or os.environ.get("CATCHER_CTYPE", BIN_CT)
     conn = b"Connection: close\r\n" if close else b"Connection: keep-alive\r\n"
     hdr = (
-        f"HTTP/{ver} 200 OK\r\n".encode()
+        f"HTTP/{ver} {status}\r\n".encode()
         + f"Content-Type: {ct}\r\n".encode()
         + f"Content-Length: {len(body)}\r\n".encode()
         + conn
@@ -311,8 +459,8 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 resp = _http_envelope(body, ack=ack, close=close)
                 conn.sendall(resp)
                 _log(f"  → {label} ack={ack!r} close={close} wire={len(resp)}B")
-                if "Login→" in label:
-                    _log("  ★ Login. Succès = 1 seul Login, plus de Searching, ★ GET tiles.")
+                if "Login→" in label and not _LOGIN["locked"]:
+                    _log("  (si un nouveau Login arrive → variante refusée, on essaie la suivante)")
                 if close:
                     try:
                         conn.shutdown(socket.SHUT_WR)
@@ -323,7 +471,12 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 continue
 
             if "GET" in first:
-                _log(f"  ★ GET {path}")
+                is_tile = "/tiles" in path.lower()
+                if is_tile:
+                    _log(f"  ★★★ TUILE demandée: {path}")
+                    _log("      (login OK — il faut de vraies données de carte ici)")
+                else:
+                    _log(f"  ★ GET {path}")
                 res = _resolve_resource(path)
                 payload = res.read_bytes() if res else b""
                 if not payload:
@@ -336,9 +489,17 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                         if c.is_file():
                             payload = c.read_bytes()
                             break
-                if not payload and (
-                    path.lower().endswith((".png", ".jpg", ".jpeg", ".gif"))
-                    or "/tiles" in path.lower()
+                if not payload and is_tile:
+                    # Une fausse image casserait le décodeur de tuiles : 404 propre.
+                    conn.sendall(
+                        _http_envelope(
+                            b"", ack=b"", close=False, ctype="text/plain",
+                            status="404 Not Found",
+                        )
+                    )
+                    continue
+                if not payload and path.lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".gif")
                 ):
                     payload = _PNG1
                 ct = _guess_ct(path, payload)
@@ -402,7 +563,11 @@ def main() -> None:
     http_port = int(os.environ.get("CATCHER_HTTP_PORT", "80"))
     https_port = int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
     _log(f"CATCHER_REV={CATCHER_REV} → {PC_IP}")
-    _log("Login→GPL11 CRLF + UpdateInboxCount + keepalive (no ServerConfig on login).")
+    _load_locked_variant()
+    _log(f"Balayage auto de {len(_variants('ios6user'))} formats LoginSuccessful.")
+    _log("Chaque relance de Login = format refusé → on passe au suivant.")
+    _log("Succès = ★★★ LOGIN ACCEPTÉ (le client envoie At/SeeMe).")
+    _log("Remise à zéro du balayage: rm logs/login-variant.txt")
 
     http_sock = _bind_listen(http_port)
     https_sock = _bind_listen(https_port)

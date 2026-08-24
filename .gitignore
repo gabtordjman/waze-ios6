@@ -1,2 +1,4 @@
 /logs
 /tweak
+__pycache__/
+*.pyc

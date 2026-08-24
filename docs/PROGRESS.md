@@ -38,15 +38,81 @@ sh scripts/patch-iphone.sh 192.168.1.61 # autre iPhone
 | DNAT `75.101.158.200:80/443` → PC | OK |
 | Trafic HTTP `:80` `POST /rtserver/distrib/login` | OK |
 | Prefs `iphone_no` + creds → Login POST (plus Register) | OK |
-| Login accepté → plus de « Searching network » | **À valider** (rev `login-gpl11-sc-20260824a`) |
-| GET tuiles / lang.conf | **En cours** (ServerConfig + GET stub) |
+| `Download.*` → PC (icônes UI téléchargées) | OK — prouve que les prefs sont lues |
+| Login accepté → plus de « Searching network » | **balayage auto** (rev `login-sweep-20260824d`) |
+| GET tuiles | après login ; journalisé, 404 (pas de données de carte) |
 
-**Rev catcher :** `login-gpl11-sc-20260824a`
+**Rev catcher :** `login-sweep-20260824d`
 
-- Login : Freemap **11 champs** exacts, **CRLF**, id **1**, pas de PAD sur la même ligne
-- Lignes séparées : `UpdateInboxCount,0` + `ServerConfig` (Tiles, Config, Langs…)
-- keep-alive sur Login (pas de `Connection: close`)
-- GET : lang.conf, lang.eng, tuiles PNG 1×1
+### Pourquoi le login échouait (analyse source)
+
+Le client envoie `ClientInfo,**202**`. La source GPL disponible
+(`mkoloberdin/waze`, `Realtime/RealtimeNet.h`) définit
+`RTNET_PROTOCOL_VERSION (150)` — deux protocoles différents.
+
+En 150, `OnLoginResponse` (RealtimeNetRec.c) lit exactement :
+
+```
+id, cookie, rank, points, rating, prevRank, addon, pointsTs,
+exclusiveMoods, maxProtocol, serverVersion        →  11 champs
+```
+
+Puis `bLoggedIn = TRUE`.
+
+Le format 202 n’est pas public. Les deux erreurs possibles sont symétriques
+(`websvc_trans.c`, `OnCustomResponse`) :
+
+| Cas | Chemin | Résultat |
+|-----|--------|----------|
+| trop peu de champs | `ReadIntFromString` → NULL | `err_parser_unexpected_data` |
+| trop de champs | reste de ligne lu comme tag | `err_parser_missing_tag_handler` |
+
+`trans_failed` → `OnLoginResult` échoue → Waze renvoie `Login`. Symptôme observé.
+
+Le format de la requête confirme le décalage :
+
+- GPL 150 : `Login,%d,%s,%s,%d,%s,%s,%s,%d,%s` (commence par le n° de protocole)
+- observé : `Login,ios6user,ios6pass,,1,0,<ts>,normal` (7 champs, protocole déplacé dans `ClientInfo`)
+
+### Balayage automatique
+
+16 formats candidats, un par tentative de login (~20 s d’intervalle) :
+
+- `gpl11-seul`, `gpl11+inbox`
+- `ver+1int` … `ver+6int` (entiers ajoutés après la version)
+- `1int+ver` … `4int+ver` (entiers avant la version)
+- `ipa17`, `ipa17+pad`, `ver+user`, `ver+8int`
+
+Détection de succès : le client envoie une commande qui n’existe que si
+`bLoggedIn == TRUE` (`At`, `SeeMe`, `GPSPath`, `NodePath`…). La variante gagnante
+est écrite dans `logs/login-variant.txt` et réutilisée ensuite.
+
+Forcer : `LOGIN_VARIANT=ver+2int sudo -E sh go.sh` · Recommencer : `rm logs/login-variant.txt`
+
+### Enveloppe (validée)
+
+- CRLF ; `Content-Length` = taille du corps
+- `/distrib/` (V2) → préfixe fil `ack\r\n` **avant** l’HTTP
+  (`OnHTTPAck` consomme `strlen("ack\r\n")`)
+- keep-alive (pas de `Connection: close`)
+
+Preuve que l’enveloppe est bonne : les POST `Stats` sur `/distrib/static`
+reçoivent `RC,200,OK` et ne sont **pas** rejoués.
+
+### Recherche / itinéraire
+
+Répondre `RC,200,OK` seul à une recherche fait planter l’app (le parseur de
+résultats n’a rien à lire). On renvoie maintenant des codes que `VerifyStatus`
+connaît :
+
+- recherche → `RC,600` → `err_as_could_not_find_matches` (« aucun résultat »)
+- itinéraire → `RC,500` → `err_failed` (échec propre)
+
+### Outil de diagnostic — `diag.sh`
+
+Le binaire Waze contient les chaînes `roadmap_log` du parseur, dans l’ordre des
+champs lus. `sh diag.sh` les extrait par SSH, avec le journal d’erreurs du
+dernier login. C’est la source de vérité pour la 202, à préférer au balayage.
 
 ---
 

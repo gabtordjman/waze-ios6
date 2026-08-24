@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-CATCHER_REV = "login-gpl11-min-20260824c"
+CATCHER_REV = "login-sweep-20260824d"
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
