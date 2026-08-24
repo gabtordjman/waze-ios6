@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=login-gpl11-ka-20260817a
+"""CATCHER_REV=login-gpl11-sc-20260824a
 
-Doc-correct LoginSuccessful (Freemap RealtimeNetRec.c OnLoginResponse):
+Freemap login_parser (RealtimeNetRec.c):
+  - OnLoginResponse: exactly 11 CSV fields after tag, then bLoggedIn=TRUE
+  - Extra CSV on same line poisons the parser → login retry
+  - Separate tagged lines OK: UpdateInboxCount, ServerConfig (handlers exist)
 
-  After tag LoginSuccessful, parse EXACTLY 11 fields then bLoggedIn=TRUE:
-    id, cookie, rank, points, rating, prev, addon, ts, moods, maxProto, ver
-
-  version ExtractNetworkString terminates on ,\\r\\n with TRIM_ALL_CHARS.
-  Any EXTRA CSV after ver (PAD / IPA17 tail) is left as unprocessed data →
-  OnCustomResponse reads next tag ("1", "ios6user", …) →
-  err_parser_missing_tag_handler → transaction FAILED.
-
-  RealTimeLoginState also needs LastError clean + LastNetConnect_Success
-  ("Searching network" = !RealTimeLoginState). So:
-    - exact Freemap-11 line (no leftover poison)
-    - keep-alive on Login (no Connection: close / FIN race — PROGRESS §4)
-    - optional UpdateInboxCount (named handler in login_parser) after clean line
-
-Stats-only ClientInfo bursts are analytics, not proof of login success.
+Response uses CRLF (Freemap http_response_status / line parsing).
+Login id=1 (coherent with System.ServerId: 1). ServerConfig points tiles/config at PC.
 """
 
 from __future__ import annotations
@@ -30,8 +20,9 @@ import ssl
 import threading
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
-CATCHER_REV = "login-gpl11-ka-20260817a"
+CATCHER_REV = "login-gpl11-sc-20260824a"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -46,9 +37,8 @@ PC_IP = os.environ.get("PC_IP", "192.168.1.191").strip()
 BASE = f"http://{PC_IP}"
 BIN_CT = "binary/octet-stream"
 
-# Freemap OnLoginResponse field order (exactly 11 after tag). Stop at ver.
-# Cookie ≤ RTNET_SERVERCOOKIE_MAXSIZE (63); Jeske-style 16-char token.
-LOGIN_OK = "LoginSuccessful,4242,2Dyqtmg7r0HCZPFw,1,100,1,1,0,0,0,202,3.9.6.1"
+# 11 fields after LoginSuccessful — stop at ver (no PAD tail on same line).
+LOGIN_OK = "LoginSuccessful,1,cookie1234567890,1,100,1,1,0,0,0,202,3.9.6.1"
 REGISTER_OK = "RegisterSuccessful,ios6user,ios6pass"
 
 
@@ -60,24 +50,36 @@ def _log(msg: str) -> None:
         f.write(line + "\n")
 
 
-def _lines(rows: list[str], *, crlf: bool = False) -> bytes:
-    nl = "\r\n" if crlf else "\n"
-    return (nl.join(rows) + nl).encode("ascii")
+def _lines(rows: list[str]) -> bytes:
+    return ("\r\n".join(rows) + "\r\n").encode("ascii")
+
+
+def _server_configs() -> list[str]:
+    return [
+        f"ServerConfig,0,Download,Config,{BASE}/resources/config/",
+        f"ServerConfig,1,Download,Langs,{BASE}/resources/langs/",
+        f"ServerConfig,2,Download,Images,{BASE}/resources/images/",
+        f"ServerConfig,3,Download,Sound,{BASE}/resources/sounds/",
+        f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
+        f"ServerConfig,5,Download,Tiles,{BASE}/tiles/",
+    ]
 
 
 BODY_GEO5 = _lines(
     [
         "RC,200,OK",
         "GeoServerConfig,1,world,eng,5,1",
-        f"ServerConfig,0,Download,Config,{BASE}/resources/config/",
-        f"ServerConfig,1,Download,Langs,{BASE}/resources/langs/",
-        f"ServerConfig,2,Download,Images,{BASE}/resources/images/",
-        f"ServerConfig,3,Download,Sound,{BASE}/resources/sounds/",
-        f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
+        *_server_configs(),
     ]
 )
-# RC + exact LoginSuccessful + optional tagged line (login_parser has handler).
-BODY_LOGIN = _lines(["RC,200,OK", LOGIN_OK, "UpdateInboxCount,0"])
+BODY_LOGIN = _lines(
+    [
+        "RC,200,OK",
+        LOGIN_OK,
+        "UpdateInboxCount,0",
+        *_server_configs(),
+    ]
+)
 BODY_REGISTER = _lines(["RC,200,OK", REGISTER_OK])
 BODY_RC = _lines(["RC,200,OK"])
 
@@ -124,8 +126,7 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     ):
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         _note_proto_b64(req_body)
-        # keep-alive: do not FIN mid-WST (PROGRESS §4)
-        return "Login→GPL11+Inbox+keepalive", BODY_LOGIN, False
+        return "Login→GPL11+SC+keepalive", BODY_LOGIN, False
 
     if b"register," in low:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
@@ -134,16 +135,23 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     if b"getgeoserverconfig" in low or b"getgeoconfig" in low:
         return "GetGeo→geo5", BODY_GEO5, False
 
+    # Post-login batch (At, Stats, MapDisplayed, …) — RC,200,OK suffices
+    if any(
+        c.lower() in ("at", "stats", "mapdisplayed", "location", "keepalive")
+        for c in cmds
+    ):
+        return "Realtime batch→RC", BODY_RC, False
+
     return "RC only", BODY_RC, False
 
 
-def _http_envelope(body: bytes, *, ack: bytes, close: bool) -> bytes:
+def _http_envelope(body: bytes, *, ack: bytes, close: bool, ctype: str | None = None) -> bytes:
     ver = os.environ.get("CATCHER_HTTP_VER", "1.1")
-    ctype = os.environ.get("CATCHER_CTYPE", BIN_CT)
+    ct = ctype or os.environ.get("CATCHER_CTYPE", BIN_CT)
     conn = b"Connection: close\r\n" if close else b"Connection: keep-alive\r\n"
     hdr = (
         f"HTTP/{ver} 200 OK\r\n".encode()
-        + f"Content-Type: {ctype}\r\n".encode()
+        + f"Content-Type: {ct}\r\n".encode()
         + f"Content-Length: {len(body)}\r\n".encode()
         + conn
         + b"\r\n"
@@ -192,6 +200,57 @@ _PNG1 = bytes(
 )
 
 
+def _resolve_resource(path: str) -> Path | None:
+    """Map S3 / resources / config / lang paths to fake-resources/."""
+    p = unquote(urlparse(path).path)
+    rel = p.lstrip("/")
+    if rel.startswith("resources/"):
+        rel = rel[len("resources/") :]
+    name = Path(p).name
+    parts = Path(rel).parts
+    candidates: list[Path] = [
+        RES / rel,
+        RES / p.lstrip("/"),
+        RES / "langs" / name,
+        RES / "config" / name,
+    ]
+    if name == "lang.conf":
+        candidates.extend(
+            [
+                RES / "config" / "lang.conf",
+                RES / "config" / "1" / "lang.conf",
+                RES / "resources" / "config" / "1" / "lang.conf",
+            ]
+        )
+    if name.startswith("lang."):
+        candidates.extend([RES / "langs" / name, RES / "resources" / "langs" / name])
+    if len(parts) >= 2 and parts[0] == "config":
+        candidates.append(RES / "config" / parts[-1])
+        if len(parts) >= 3:
+            candidates.append(RES / "config" / parts[1] / parts[-1])
+    if len(parts) >= 2 and parts[0] == "langs":
+        candidates.append(RES / "langs" / parts[-1])
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def _guess_ct(path: str, data: bytes) -> str:
+    low = path.lower()
+    if low.endswith(".png"):
+        return "image/png"
+    if low.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    if low.endswith(".gif"):
+        return "image/gif"
+    if low.endswith((".conf", ".txt", ".lang")) or b"lang." in path.encode():
+        return "text/plain; charset=utf-8"
+    if data[:4] == b"\x89PNG":
+        return "image/png"
+    return "application/octet-stream"
+
+
 def _handle_conn(conn: socket.socket, scheme: str) -> None:
     peer = "?"
     idle = float(os.environ.get("CATCHER_IDLE_SEC", "180"))
@@ -230,7 +289,6 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 resp = _http_envelope(body, ack=ack, close=close)
                 conn.sendall(resp)
                 _log(f"  → {label} ack={ack!r} close={close} wire={len(resp)}B")
-                _log(f"  → body:\n{body.decode('ascii', errors='replace')}")
                 if "Login→" in label:
                     _log("  ★ Login. Succès = 1 seul Login, plus de Searching, ★ GET tiles.")
                 if close:
@@ -244,27 +302,28 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
 
             if "GET" in first:
                 _log(f"  ★ GET {path}")
-                name = Path(path).name
-                payload = b""
-                for c in (
-                    RES / path.lstrip("/"),
-                    RES / "tiles" / name,
-                    RES / "resources" / "images" / "1.0" / "2x" / name,
-                ):
-                    if c.is_file():
-                        payload = c.read_bytes()
-                        break
+                res = _resolve_resource(path)
+                payload = res.read_bytes() if res else b""
+                if not payload:
+                    name = Path(path).name
+                    for c in (
+                        RES / path.lstrip("/"),
+                        RES / "tiles" / name,
+                        RES / "resources" / "images" / "1.0" / "2x" / name,
+                    ):
+                        if c.is_file():
+                            payload = c.read_bytes()
+                            break
                 if not payload and (
                     path.lower().endswith((".png", ".jpg", ".jpeg", ".gif"))
                     or "/tiles" in path.lower()
                 ):
                     payload = _PNG1
-                conn.sendall(_http_envelope(payload, ack=b"", close=False))
+                ct = _guess_ct(path, payload)
+                conn.sendall(_http_envelope(payload, ack=b"", close=False, ctype=ct))
                 continue
 
-            conn.sendall(
-                _http_envelope(BODY_RC, ack=_ack_for(path), close=False)
-            )
+            conn.sendall(_http_envelope(BODY_RC, ack=_ack_for(path), close=False))
     except Exception as e:
         _log(f"{peer} error: {e}")
     finally:
@@ -274,59 +333,60 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
             pass
 
 
-def _serve_plain(port: int) -> None:
+def _bind_listen(port: int) -> socket.socket:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("0.0.0.0", port))
-    s.listen(20)
+    try:
+        s.bind(("0.0.0.0", port))
+    except OSError as e:
+        raise SystemExit(f"bind :{port} failed: {e}  → sudo ss -ltnp sport = :{port}") from e
+    s.listen(64)
+    return s
+
+
+def _serve_plain(sock: socket.socket, port: int) -> None:
     _log(f"HTTP  :{port}")
     while True:
-        c, _ = s.accept()
+        c, _ = sock.accept()
         threading.Thread(target=_handle_conn, args=(c, "http"), daemon=True).start()
 
 
-def _serve_tls(port: int) -> None:
+def _serve_tls(sock: socket.socket, port: int) -> None:
     cert, key = TLS_DIR / "leaf-chain.crt", TLS_DIR / "leaf.key"
     if not cert.exists() or not key.exists():
         raise SystemExit(f"missing certs {TLS_DIR}")
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    if hasattr(ssl, "TLSVersion"):
-        ctx.minimum_version = ssl.TLSVersion.TLSv1
     try:
         ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
     except ssl.SSLError:
         pass
     ctx.load_cert_chain(str(cert), str(key))
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("0.0.0.0", port))
-    s.listen(20)
     _log(f"CATCHER_REV={CATCHER_REV} HTTPS :{port}")
     while True:
-        c, _ = s.accept()
-
-        def _wrap(sock: socket.socket) -> None:
+        c, _ = sock.accept()
+        try:
+            ss = ctx.wrap_socket(c, server_side=True)
+        except Exception as e:
+            _log(f"TLS accept: {e}")
             try:
-                ss = ctx.wrap_socket(sock, server_side=True)
-            except Exception as e:
-                _log(f"TLS accept: {e}")
-                try:
-                    sock.close()
-                except Exception:
-                    pass
-                return
-            _handle_conn(ss, "https")
-
-        threading.Thread(target=_wrap, args=(c,), daemon=True).start()
+                c.close()
+            except Exception:
+                pass
+            continue
+        threading.Thread(target=_handle_conn, args=(ss, "https"), daemon=True).start()
 
 
 def main() -> None:
     http_port = int(os.environ.get("CATCHER_HTTP_PORT", "80"))
     https_port = int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
     _log(f"CATCHER_REV={CATCHER_REV} → {PC_IP}")
-    _log("Login→Freemap-11 exact + UpdateInboxCount + keepalive (no PAD leftover).")
-    threading.Thread(target=_serve_plain, args=(http_port,), daemon=True).start()
-    threading.Thread(target=_serve_tls, args=(https_port,), daemon=True).start()
+    _log("Login→GPL11 CRLF + ServerConfig(tiles) + keepalive.")
+
+    http_sock = _bind_listen(http_port)
+    https_sock = _bind_listen(https_port)
+
+    threading.Thread(target=_serve_plain, args=(http_sock, http_port), daemon=True).start()
+    threading.Thread(target=_serve_tls, args=(https_sock, https_port), daemon=True).start()
     while True:
         time.sleep(3600)
 

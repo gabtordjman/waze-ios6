@@ -62,17 +62,6 @@ Realtime.Comm Check period (minutes): 1
 Realtime.Refresh rate (minutes): 2
 Realtime.Summary Refresh rate (minutes): 0.5
 Realtime.Hi-Res Refresh rate (minutes): 0.17
-Realtime.Web-Service Address: http://rt.waze.com/rtserver
-Realtime.Web-Service Secured Address: http://rt.waze.com/rtserver
-Realtime.Web-Service Secured Address Resolved: http://rt.waze.com/rtserver
-Realtime.Web-Service Secure Enabled Client_2_3: no
-Realtime.Web-Service Secured Commands:
-Realtime.Name: ios6user
-Realtime.Password: ios6pass
-Realtime.Nickname: ios6user
-System.ServerId: 1
-GeoConfig.version: 1
-GeoConfig.Web-Service Address: http://rt.waze.com/rtserver
 Navigation.Min Mobile Knots: 19
 Navigation.Max Jam Knots: 11
 Keyboard.Typing lock threshold: 1000
@@ -81,7 +70,6 @@ Download.Sound: http://192.168.1.191/resources/sounds/
 Download.Langs: http://192.168.1.191/resources/langs/
 Download.Langs TTS: http://192.168.1.191/resources/lang_tts/
 Download.Config: http://192.168.1.191/resources/config/
-Download.Tiles: http://192.168.1.191/tiles
 Download.Images_Ver: 1.0
 Download.Sound_Ver: 1.0
 Download.Langs_Ver: 1.0

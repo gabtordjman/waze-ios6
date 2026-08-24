@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
-# CATCHER_REV=login-pad-20260816ac
-"""Waze iOS6 catcher launcher."""
+# CATCHER_REV=login-gpl11-sc-20260824a
+"""Waze iOS6 catcher launcher — lancer depuis la racine du repo."""
 from __future__ import annotations
 
 import atexit
 import os
+import re
 import signal
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-CATCHER_REV = "login-pad-20260816ac"
+CATCHER_REV = "login-gpl11-sc-20260824a"
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CATCHER = HERE / "rts_catcher_min.py"
 DEAD_IP = "75.101.158.200"
+DNS_SCRIPT = HERE / "run-dns-sinkhole.sh"
 
-print(f"CATCHER_REV={CATCHER_REV}  Login PAD (no ServerConfig after)", flush=True)
-print("Succès = 1 Login, plus Searching, ★ GET tiles. Sinon → docs/PROGRESS.md", flush=True)
+print(f"CATCHER_REV={CATCHER_REV}", flush=True)
+print("Depuis la racine:  sudo python3 scripts/run-ultimate.sh", flush=True)
+print("Succès = 1 Login, plus Searching, ★ GET tiles/lang.conf", flush=True)
 
 if not CATCHER.is_file():
-    sys.exit(f"ERREUR: {CATCHER} introuvable")
+    sys.exit(f"ERREUR: {CATCHER} introuvable (cwd={Path.cwd()})")
 
 os.environ["CATCHER_CTYPE"] = "binary/octet-stream"
 os.environ.setdefault("CATCHER_HTTP_PORT", "80")
@@ -33,13 +38,12 @@ os.environ.setdefault(
 )
 
 phone = os.environ.get("PHONE", "192.168.1.60")
-# Both iPhones on the LAN (3GS .60 / 4S .61) — comma-separated
 phones = [
     p.strip()
     for p in os.environ.get("PHONES", f"{phone},192.168.1.61").split(",")
     if p.strip()
 ]
-phones = list(dict.fromkeys(phones))  # unique, keep order
+phones = list(dict.fromkeys(phones))
 
 pc_ip = os.environ.get("PC_IP", "").strip()
 if not pc_ip:
@@ -50,59 +54,116 @@ if not pc_ip:
 os.environ["PC_IP"] = pc_ip
 
 print(f"PC={pc_ip}  phones={phones}", flush=True)
-print("'Searching network' = Realtime PAS loggé (tuiles après login).", flush=True)
-print("Patch: scp scripts/iphone-patch-4.sh root@192.168.1.60:/tmp/ && ssh … sh /tmp/iphone-patch-4.sh", flush=True)
+print("Patch 4S (.60): sh scripts/patch-iphone.sh", flush=True)
+print("Patch .61     : sh scripts/patch-iphone.sh 192.168.1.61", flush=True)
 print(flush=True)
 
-# Free :80 / :443 — leftover catcher / nginx causes Errno 98
 http_port = int(os.environ.get("CATCHER_HTTP_PORT", "80"))
 https_port = int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
 
 
-def _free_port(port: int) -> None:
-    """Kill whatever is listening on TCP port (needs root)."""
-    killed = False
-    for cmd in (
-        ["fuser", "-k", f"{port}/tcp"],
-        ["fuser", "-k", "-n", "tcp", str(port)],
-    ):
+def _port_bindable(port: int) -> bool:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+        return True
+    except OSError:
+        return False
+    finally:
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            killed = True
-            break
-        except FileNotFoundError:
-            continue
-    if not killed:
-        try:
-            out = subprocess.check_output(
-                ["ss", "-ltnp", f"sport = :{port}"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            )
-            import re
+            s.close()
+        except Exception:
+            pass
 
-            for m in re.finditer(r"pid=(\d+)", out):
-                pid = m.group(1)
+
+def _pids_on_port(port: int) -> list[str]:
+    pids: list[str] = []
+    try:
+        out = subprocess.check_output(
+            ["ss", "-ltnp", f"sport = :{port}"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        pids = list(dict.fromkeys(re.findall(r"pid=(\d+)", out)))
+    except Exception:
+        pass
+    return pids
+
+
+def _free_port(port: int) -> None:
+    """Kill listeners until :port is bindable (needs root)."""
+    for attempt in range(8):
+        if _port_bindable(port):
+            print(f"  port :{port} OK", flush=True)
+            return
+
+        killed_any = False
+        for cmd in (
+            ["fuser", "-k", "-n", "tcp", str(port)],
+            ["fuser", "-k", f"{port}/tcp"],
+        ):
+            try:
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                killed_any = True
+            except FileNotFoundError:
+                continue
+
+        for pid in _pids_on_port(port):
+            subprocess.run(["kill", "-9", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"  killed pid {pid} on :{port}", flush=True)
+            killed_any = True
+
+        if attempt == 0:
+            for svc in ("nginx", "apache2", "httpd"):
                 subprocess.run(
-                    ["kill", "-9", pid],
+                    ["systemctl", "stop", svc],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
                 )
-                print(f"  killed pid {pid} on :{port}", flush=True)
-                killed = True
-        except Exception:
-            pass
-    # brief wait for TIME_WAIT / kernel release
-    import time as _time
 
-    _time.sleep(0.4)
-    print(f"  port :{port} {'libéré' if killed else 'check (fuser/ss)'}", flush=True)
+        if not killed_any and attempt >= 2:
+            break
+        time.sleep(0.5)
+
+    if not _port_bindable(port):
+        print(f"  ERREUR: :{port} toujours occupé — ss -ltnp sport = :{port}", flush=True)
+        sys.exit(1)
 
 
-print("Libération ports catcher…", flush=True)
+def _kill_stale_catchers() -> None:
+    """Previous run-ultimate / rts_catcher may still hold :80."""
+    try:
+        out = subprocess.check_output(["ps", "aux"], text=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        return
+    my_pid = str(os.getpid())
+    for line in out.splitlines():
+        if my_pid in line:
+            continue
+        if "rts_catcher_min.py" in line or "run-ultimate.sh" in line:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                pid = parts[1]
+                subprocess.run(["kill", "-9", pid], check=False)
+                print(f"  stale catcher pid {pid} killed", flush=True)
+    time.sleep(0.3)
+
+
+print("Arrêt anciens catchers…", flush=True)
+_kill_stale_catchers()
+
+print("Libération ports :80 / :443…", flush=True)
 _free_port(http_port)
 _free_port(https_port)
+
+# DNS sinkhole (iPhone Wi-Fi DNS → PC) — optional but recommended
+if DNS_SCRIPT.is_file() and os.environ.get("SKIP_DNS", "").strip() != "1":
+    try:
+        subprocess.run(["bash", str(DNS_SCRIPT)], check=False, cwd=str(ROOT))
+    except Exception as exc:
+        print(f"dnsmasq skip: {exc}", flush=True)
 
 # If ServerConfig is ignored, IPA still hits DEAD_IP:80 — steal those packets.
 dnat_ok = False
@@ -248,7 +309,6 @@ try:
             iface = parts[parts.index("dev") + 1] if "dev" in parts else "wlp3s0"
         except Exception:
             iface = "wlp3s0"
-    # Fresh pcap each run
     if pcap.is_file():
         pcap.unlink()
     host_filt = " or ".join(f"host {p}" for p in phones)
@@ -262,14 +322,12 @@ try:
             "-U",
             "-w",
             str(pcap),
-            # ALL traffic from phones (not only 80/443) — find where Realtime goes
             f"({host_filt}) or host {DEAD_IP}",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     print(f"tcpdump pid={tcpdump_proc.pid} iface={iface} pcap={pcap}", flush=True)
-    print("pcap = TOUT le trafic des iPhones (pas seulement :80/:443)", flush=True)
 except Exception as exc:
     print(f"tcpdump skip: {exc}", flush=True)
 
@@ -278,8 +336,6 @@ signal.signal(signal.SIGTERM, lambda *_: (_pcap_summary(), _clear_dnat(), sys.ex
 
 try:
     sys.argv[0] = str(CATCHER)
-    # Force matching ctype / drain for this rev
-    os.environ["CATCHER_REV_FORCE"] = CATCHER_REV
     code = compile(CATCHER.read_text(encoding="utf-8"), str(CATCHER), "exec")
     exec(code, {"__name__": "__main__", "__file__": str(CATCHER)})
 finally:
