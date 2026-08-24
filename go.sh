@@ -4,22 +4,22 @@
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT" || exit 1
 
-for f in go.sh stop.sh phone.sh pull.sh scripts/run-ultimate.py scripts/rts_catcher_min.py; do
+for f in go.sh stop.sh phone.sh pull.sh scripts/run-ultimate.sh scripts/run-ultimate.py scripts/rts_catcher_min.py; do
   [ -f "$f" ] && sed -i 's/\r$//' "$f" 2>/dev/null
 done
 
 echo "=== Waze iOS6 catcher ==="
 
-# Une seule instance ; arrête l'ancien catcher (pas nginx/apache).
 LOCK="/tmp/waze-ios6-catcher.lock"
 exec 9>"$LOCK"
 if ! flock -n 9; then
-  echo "ERREUR: un go.sh tourne déjà. Autre terminal: sh stop.sh"
+  echo "ERREUR: catcher déjà lancé. Autre terminal: sh stop.sh"
   exit 1
 fi
 
 sh "$ROOT/stop.sh" 2>/dev/null || true
 
+echo "Lancement…"
 if [ "$(id -u)" -eq 0 ]; then
   exec python3 "$ROOT/scripts/run-ultimate.py"
 else

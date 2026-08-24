@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-CATCHER_REV = "login-gpl11-min-20260824b"
+CATCHER_REV = "login-gpl11-min-20260824c"
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -53,13 +53,6 @@ print(f"CATCHER_REV={CATCHER_REV}  pid={MY_PID}", flush=True)
 print(f"PC={pc_ip}  phones={phones}", flush=True)
 
 
-def _stop_our_catcher() -> None:
-    """Stop only our Python catcher — never kill nginx/apache workers on :80."""
-    for pat in ("rts_catcher_min.py", "run-ultimate.py"):
-        subprocess.run(["pkill", "-9", "-f", pat], check=False)
-    time.sleep(0.8)
-
-
 def _port_owner(port: int) -> str:
     try:
         return subprocess.check_output(
@@ -72,14 +65,13 @@ def _port_owner(port: int) -> str:
 
 
 def _ensure_port(port: int) -> None:
+    """Test bind only — stop.sh (avant exec) tue les anciens catchers, pas nous."""
     print(f"Port :{port}…", flush=True)
-    _stop_our_catcher()
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("0.0.0.0", port))
         print(f"  :{port} OK", flush=True)
-        return
     except OSError:
         owner = _port_owner(port)
         print(f"ERREUR: :{port} occupé par un autre service (nginx/apache ?)", flush=True)

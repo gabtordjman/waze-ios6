@@ -1,18 +1,21 @@
 #!/bin/sh
-# Arrête proprement le catcher Waze (sans toucher nginx/apache).
+# Arrête le catcher Waze (sans toucher nginx/apache).
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT" || exit 1
 
 echo "=== stop catcher ==="
-for pat in rts_catcher_min.py run-ultimate.py run-ultimate.sh; do
-  pkill -f "$pat" 2>/dev/null && echo "  pkill $pat"
+MY=$$
+for pat in rts_catcher_min.py run-ultimate.py; do
+  for pid in $(pgrep -f "$pat" 2>/dev/null); do
+    [ "$pid" = "$MY" ] && continue
+    kill -9 "$pid" 2>/dev/null && echo "  kill $pid ($pat)"
+  done
 done
-sleep 1
+sleep 0.5
 
 if command -v ss >/dev/null 2>&1; then
-  busy=$(ss -ltnp "sport = :80" 2>/dev/null | grep -v '^State' | grep -c LISTEN || true)
-  if [ "$busy" -gt 0 ]; then
-    echo "Port :80 encore occupé (peut-être nginx — pas tué volontairement) :"
+  if ss -ltnp "sport = :80" 2>/dev/null | grep -q LISTEN; then
+    echo "Port :80 encore occupé (nginx ? — pas tué volontairement) :"
     ss -ltnp "sport = :80" 2>/dev/null | grep LISTEN || true
   else
     echo "Port :80 libre"
