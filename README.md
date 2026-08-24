@@ -33,6 +33,33 @@ ce qu’on observe.
 **Donc on arrête de deviner** : le catcher essaie automatiquement 16 formats, un
 par tentative de login, et s’arrête sur celui que l’app accepte.
 
+### Quelle version parle le protocole 150 ?
+
+**Waze 2.4.0.0** — la dernière version publiée sous GPL v2, pour iPhone et Android
+(la v3 est une réécriture complète, passée en propriétaire). Vérifié à deux
+sources : Wikipédia (« The last open-source client version for the iPhone and
+Android is 2.4.0.0 ») et le dépôt lui-même, `iphone/Xcode/Info.plist` →
+`CFBundleVersion 2.4.0.0`.
+
+Le mirroir a une branche **`iphone`** : c’est bien le code iOS, pas seulement
+l’Android. Son `Realtime/RealtimeNetRec.c` donne `OnLoginResponse` mot pour mot,
+donc la réponse exacte :
+
+```
+RC,200,OK
+LoginSuccessful,<id>,<cookie>,<rank>,<points>,<rating>,<prevRank>,<addon>,<pointsTs>,<moods>,<maxProto>,<version>
+```
+
+Le catcher **détecte le protocole tout seul** et n’a plus rien à deviner en 150 :
+
+| Requête reçue | Mode |
+|---------------|------|
+| `Login,150,<user>,…` (protocole en tête) | réponse GPL exacte, login OK du 1er coup |
+| `ClientInfo,202,…` puis `Login,<user>,…` | balayage des 16 formats candidats |
+
+Donc si tu installes la 2.4.0.0, il n’y a **aucun patch à faire** : lance le
+catcher, il bascule seul.
+
 ---
 
 ## T480 — lancement
@@ -119,17 +146,29 @@ liste des champs, la section 2 l’erreur exacte du dernier login.
 
 ## Et la carte ?
 
-Deux étapes distinctes, ne pas les confondre :
+Deux étapes distinctes, ne pas les confondre. **Passer en 2.4.0.0 règle la 1, pas
+la 2** — les serveurs de carte sont morts pour toutes les versions.
 
-1. **Login** — réparable ici, c’est du protocole. En cours via le balayage.
+1. **Login** — protocole. Résolu en 150, en recherche en 202.
 2. **Données de carte** — les tuiles venaient de `tiles*.waze.com`, éteints eux
-   aussi. Le catcher journalise maintenant chaque URL de tuile demandée
-   (`★★★ TUILE demandée`) et répond `404` plutôt qu’une fausse image, qui
-   casserait le décodeur. Une fois le login passé, ces URL diront exactement quel
-   format de tuiles il faudrait fournir.
+   aussi. Aucune version d’app n’y change quoi que ce soit.
 
-Autrement dit : le login et la navigation temps réel sont un problème de
-protocole ; afficher une vraie carte demandera en plus une source de tuiles.
+Ce que la source GPL apporte quand même, et qui change tout pour la suite :
+
+- `roadmap_tile.c` donne le calcul exact des identifiants de tuile. Le catcher
+  le refait en Python et journalise, dès le `MapDisplayed`, les tuiles que le
+  client va réclamer (`centre 6.484638,46.365392 → tuiles attendues: s0=335677636…`).
+  Formule : `base[echelle] + index_lon * lignes + index_lat`, coordonnées en
+  micro-degrés, tuile de 0,01° à l’échelle 0, six échelles au total.
+- `roadmap_map_download.c` révèle une porte de sortie bien plus simple que
+  servir les tuiles une par une : Waze sait télécharger un **paquet de carte
+  hors-ligne** `<Download.Source>/<region>/map<fips:05d>.wzm`, l’écrire dans
+  `maps/`, puis appeler `roadmap_tile_reset_session()`. Le catcher annonce
+  maintenant `Download,Source` et `Download,Enabled,yes`, et sert le contenu de
+  `maps/`. Il reste à fabriquer le `.wzm` — c’est le vrai chantier restant.
+
+Dépose les tuiles brutes dans `tiles/` (nommées par identifiant) et les paquets
+dans `maps/` : le catcher les sert sans configuration.
 
 ---
 

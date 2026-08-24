@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=login-sweep-20260824d
+"""CATCHER_REV=proto150-20260824e
 
-Le client iOS 3.9.6 annonce ClientInfo,202 ; la seule source GPL publique
-(mkoloberdin/waze) est en protocole 150. OnLoginResponse y lit 11 champs, mais
-la 202 en attend un nombre différent — non documenté et introuvable en ligne.
+Deux protocoles, deux stratégies — le catcher détecte lequel parle le client.
 
-Conséquence côté client (websvc_trans.c / RealtimeNetRec.c) :
-  - trop peu de champs  → err_parser_unexpected_data
-  - trop de champs      → le reste de la ligne est lu comme un tag inconnu
-                          → err_parser_missing_tag_handler
-Dans les deux cas trans_failed → OnLoginResult échoue → nouveau Login.
+1. Protocole 150 (Waze 2.4.0.0, dernière version publiée sous GPL v2).
+   Source complète : github.com/mkoloberdin/waze, branche `iphone`.
+   `Realtime/RealtimeNetRec.c` → OnLoginResponse lit exactement 11 champs :
+     id, cookie, rank, points, rating, prevRank, addon, pointsTs,
+     exclusiveMoods, serverMaxProtocol, serverVersion
+   On connaît donc la réponse exacte : pas de devinette, login OK du 1er coup.
+   Requête reconnaissable à `Login,<entier>,...` (le protocole est en tête).
 
-D'où le balayage automatique des formats candidats (voir _variants).
+2. Protocole 202 (Waze 3.9.6.1, propriétaire — réécriture complète en v3).
+   Le protocole est déporté dans `ClientInfo,202,...` et LoginSuccessful a
+   gagné des champs non documentés. Trop peu → err_parser_unexpected_data ;
+   trop → le reste de la ligne devient un faux tag
+   (err_parser_missing_tag_handler). Les deux font échouer la transaction et
+   le client relance Login. D'où le balayage des candidats (voir _variants).
+   La réponse certaine s'obtient avec `sh diag.sh` (strings du binaire).
 
 Enveloppe : CRLF, et pour /distrib/ (V2) préfixe fil `ack\\r\\n` avant l'HTTP
 (cf. OnHTTPAck qui consomme strlen("ack\\r\\n")).
@@ -30,7 +36,7 @@ import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-CATCHER_REV = "login-sweep-20260824d"
+CATCHER_REV = "proto150-20260824e"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -40,6 +46,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LOG = ROOT / "logs" / "rts-catcher.txt"
 TLS_DIR = ROOT / "mitm" / "certs" / "tls"
 RES = ROOT / "mitm" / "fake-resources"
+TILES = ROOT / "tiles"   # tuiles brutes, nommées par identifiant roadmap_tile
+MAPS = ROOT / "maps"     # paquets hors-ligne <region>/map<fips>.wzm
 
 PC_IP = os.environ.get("PC_IP", "192.168.1.191").strip()
 BASE = f"http://{PC_IP}"
@@ -88,20 +96,78 @@ def _lines(rows: list[str]) -> bytes:
     return ("\r\n".join(rows) + "\r\n").encode("ascii")
 
 
-def _req_user(req_body: bytes) -> str:
+def _line_fields(req_body: bytes, prefix: bytes) -> list[str]:
     for line in req_body.replace(b"\r\n", b"\n").split(b"\n"):
-        if line.lower().startswith(b"login,"):
-            parts = line.decode("latin1", errors="replace").split(",")
-            if len(parts) > 1 and parts[1].strip():
-                return parts[1].strip()
+        if line.lower().startswith(prefix):
+            return [p.strip() for p in line.decode("latin1", errors="replace").split(",")]
+    return []
+
+
+def _client_proto(req_body: bytes) -> tuple[int, bool]:
+    """(numéro de protocole, legacy).
+
+    legacy=True → le protocole est le 1er champ de Login (format GPL 150,
+    RTNET_FORMAT_NETPACKET_9Login "Login,%d,%s,%s,..."). Sinon il est porté par
+    ClientInfo (Waze 3.x) et la réponse LoginSuccessful n'est pas documentée.
+    """
+    ci = _line_fields(req_body, b"clientinfo,")
+    if len(ci) > 1 and ci[1].isdigit():
+        return int(ci[1]), False
+    lg = _line_fields(req_body, b"login,")
+    if len(lg) > 1 and lg[1].isdigit():
+        return int(lg[1]), True
+    return 0, False
+
+
+def _req_user(req_body: bytes) -> str:
+    lg = _line_fields(req_body, b"login,")
+    if not lg:
+        return "ios6user"
+    # Legacy: Login,<proto>,<user>,<pw>…  |  3.x: Login,<user>,<pw>,…
+    idx = 2 if (len(lg) > 1 and lg[1].isdigit()) else 1
+    if len(lg) > idx and lg[idx]:
+        return lg[idx]
     return "ios6user"
 
 
-def _variants(user: str) -> list[tuple[str, list[str]]]:
+# ── Protocole 150 : réponse exacte, lue dans la source GPL ────────────────────
+# mkoloberdin/waze @ iphone — Realtime/RealtimeNetRec.c, OnLoginResponse().
+# Onze champs, dans cet ordre, terminés par la version serveur
+# (ExtractNetworkString, MAX_SERVER_VERSION = 15 caractères max).
+# RT_INVALID_LOGINID_VALUE vaut -1 : n'importe quel autre id est accepté.
+GPL_SERVER_VERSION = "2.4.0.0"
+
+
+def _body_login_gpl(user: str, proto: int) -> tuple[str, bytes]:
+    rows = [
+        "LoginSuccessful,"
+        + ",".join(
+            [
+                "1",                    # iServerID     (≠ -1)
+                f"waze{user}cookie01",  # ServerCookie  (63 max)
+                "1",                    # iMyRanking
+                "100",                  # iMyTotalPoints
+                "1",                    # iMyRating
+                "1",                    # iMyPreviousRanking
+                "0",                    # iMyAddon
+                "0",                    # iPointsTimeStamp
+                "0",                    # iExclusiveMoods
+                str(proto),             # iServerMaxProtocol
+                GPL_SERVER_VERSION,     # serverVersion
+            ]
+        )
+    ]
+    _log(f"  protocole {proto} (GPL) — format LoginSuccessful connu, 11 champs")
+    for r in rows:
+        _log(f"    {r}")
+    return "gpl150", _lines(["RC,200,OK", *rows])
+
+
+def _variants(user: str, proto: int = 202) -> list[tuple[str, list[str]]]:
     """Formats candidats pour LoginSuccessful, du plus probable au plus exotique."""
     cookie = f"waze{user}cookie01"
     # id, cookie, rank, points, rating, prevRank, addon, pointsTs, moods, maxProto
-    head = f"1,{cookie},1,100,1,1,0,0,0,202"
+    head = f"1,{cookie},1,100,1,1,0,0,0,{proto}"
     ver = "3.9.6.1"
     out: list[tuple[str, list[str]]] = []
 
@@ -161,7 +227,13 @@ def _load_locked_variant() -> None:
 
 def _body_login(req_body: bytes) -> tuple[str, bytes]:
     user = _req_user(req_body)
-    variants = _variants(user)
+    proto, legacy = _client_proto(req_body)
+
+    # Protocole 150 : la source est publique, aucune raison de tâtonner.
+    if legacy:
+        return _body_login_gpl(user, proto)
+
+    variants = _variants(user, proto or 202)
     now = time.time()
 
     # Nouveau Login = la variante précédente a échoué → on passe à la suivante.
@@ -212,6 +284,12 @@ def _server_configs() -> list[str]:
         f"ServerConfig,3,Download,Sound,{BASE}/resources/sounds/",
         f"ServerConfig,4,Download,Langs TTS,{BASE}/resources/lang_tts/",
         f"ServerConfig,5,Download,Tiles,{BASE}/tiles/",
+        # Paquets de carte hors-ligne : roadmap_map_download.c télécharge
+        # <Download.Source>/<region>/map<fips:05d>.wzm puis appelle
+        # roadmap_tile_reset_session(). C'est la voie la plus simple pour
+        # afficher une vraie carte sans servir les tuiles une par une.
+        f"ServerConfig,6,Download,Source,{BASE}/maps",
+        "ServerConfig,7,Download,Enabled,yes",
     ]
 
 
@@ -268,6 +346,49 @@ def _note_proto_b64(req_body: bytes) -> None:
             _log(f"  ProtoBase64 decode fail: {e}")
 
 
+# ── Tuiles : indices calculés comme roadmap_tile.c (source GPL) ──────────────
+# Coordonnées en micro-degrés. tile_id = base[scale] + lon_idx*rows + lat_idx.
+_SQUARE_SIZE = 10_000
+_MAX_SQUARE_SIZE = 30_000_000
+_SCALE_STEP = 4
+
+
+def _tile_scales() -> list[tuple[int, int, int]]:
+    """(taille de tuile, index de base, nombre de lignes) par niveau d'échelle."""
+    out: list[tuple[int, int, int]] = []
+    size, base = _SQUARE_SIZE, 0
+    while size <= _MAX_SQUARE_SIZE:
+        rows = 179_999_999 // size + 1
+        cols = 359_999_999 // size + 1
+        out.append((size, base, rows))
+        base += rows * cols
+        size *= _SCALE_STEP
+    return out
+
+
+_TILE_SCALES = _tile_scales()
+
+
+def _tile_id(lon_deg: float, lat_deg: float, scale: int = 0) -> int:
+    size, base, rows = _TILE_SCALES[scale]
+    lon_idx = (int(lon_deg * 1_000_000) + 180_000_000) // size
+    lat_idx = (int(lat_deg * 1_000_000) + 90_000_000) // size
+    return base + lon_idx * rows + lat_idx
+
+
+def _note_map_displayed(req_body: bytes) -> None:
+    """Journalise les tuiles que le client va réclamer une fois connecté."""
+    f = _line_fields(req_body, b"mapdisplayed,")
+    if len(f) < 11:
+        return
+    try:
+        lon, lat = float(f[9]), float(f[10])
+    except ValueError:
+        return
+    ids = ", ".join(f"s{s}={_tile_id(lon, lat, s)}" for s in range(len(_TILE_SCALES)))
+    _log(f"  centre {lon:.6f},{lat:.6f} → tuiles attendues: {ids}")
+
+
 def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     low = req_body.lower()
     pl = path.lower()
@@ -285,6 +406,7 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     ):
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         _note_proto_b64(req_body)
+        _note_map_displayed(req_body)
         name, body = _body_login(req_body)
         return f"Login→{name}", body, False
 
@@ -459,7 +581,7 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 resp = _http_envelope(body, ack=ack, close=close)
                 conn.sendall(resp)
                 _log(f"  → {label} ack={ack!r} close={close} wire={len(resp)}B")
-                if "Login→" in label and not _LOGIN["locked"]:
+                if "Login→" in label and "gpl150" not in label and not _LOGIN["locked"]:
                     _log("  (si un nouveau Login arrive → variante refusée, on essaie la suivante)")
                 if close:
                     try:
@@ -474,15 +596,21 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 is_tile = "/tiles" in path.lower()
                 if is_tile:
                     _log(f"  ★★★ TUILE demandée: {path}")
-                    _log("      (login OK — il faut de vraies données de carte ici)")
+                    _log(f"      (déposer le fichier dans {TILES})")
+                elif "/maps/" in path.lower():
+                    _log(f"  ★★★ PAQUET DE CARTE demandé: {path}")
+                    _log(f"      (déposer le .wzm dans {MAPS})")
                 else:
                     _log(f"  ★ GET {path}")
                 res = _resolve_resource(path)
                 payload = res.read_bytes() if res else b""
                 if not payload:
                     name = Path(path).name
+                    rel = unquote(urlparse(path).path).lstrip("/")
                     for c in (
                         RES / path.lstrip("/"),
+                        TILES / name,
+                        MAPS / rel[len("maps/") :] if rel.startswith("maps/") else MAPS / rel,
                         RES / "tiles" / name,
                         RES / "resources" / "images" / "1.0" / "2x" / name,
                     ):
@@ -564,8 +692,11 @@ def main() -> None:
     https_port = int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
     _log(f"CATCHER_REV={CATCHER_REV} → {PC_IP}")
     _load_locked_variant()
-    _log(f"Balayage auto de {len(_variants('ios6user'))} formats LoginSuccessful.")
-    _log("Chaque relance de Login = format refusé → on passe au suivant.")
+    _log("Protocole 150 (Waze 2.4.0.0) : réponse exacte issue de la source GPL.")
+    _log(
+        f"Protocole 202 (Waze 3.9.6) : balayage de {len(_variants('ios6user'))} "
+        "formats LoginSuccessful ; chaque relance de Login = format refusé."
+    )
     _log("Succès = ★★★ LOGIN ACCEPTÉ (le client envoie At/SeeMe).")
     _log("Remise à zéro du balayage: rm logs/login-variant.txt")
 

@@ -195,3 +195,90 @@ V2 : préfixe wire **`ack\r\n`** avant HTTP sur `/distrib/`.
 ## Docs GPL
 
 - https://github.com/mkoloberdin/waze — `Realtime/RealtimeNetRec.c`, `websvc_trans/websvc_trans.c`
+
+Le dépôt a **cinq branches** : `android` (défaut), **`iphone`**, `master`,
+`symbian`, `wm`. La branche `iphone` est le code iOS et c’est elle qu’il faut
+lire ici — on travaillait sur `android` jusqu’ici sans le savoir.
+
+---
+
+## Quelle version correspond au protocole 150
+
+**Waze 2.4.0.0**, dernière version GPL v2 pour iPhone et Android (la v3 est une
+réécriture propriétaire). Deux confirmations indépendantes :
+
+- Wikipédia : « The last open-source client version for the iPhone and Android
+  is 2.4.0.0, and for Windows Mobile 2.0. »
+- `iphone/Xcode/Info.plist` du dépôt : `CFBundleVersion 2.4.0.0`,
+  `CFBundleIdentifier com.waze.iphone`.
+
+`Realtime/RealtimeNetDefs.h` (branche `iphone`) confirme
+`RTNET_PROTOCOL_VERSION (150)` et
+`RTNET_FORMAT_NETPACKET_9Login ("Login,%d,%s,%s,%d,%s,%s,%s,%d,%s")` : le
+protocole est le **premier champ de `Login`**, il n’y a pas de `ClientInfo`.
+C’est ce qui permet au catcher de distinguer les deux clients sans configuration.
+
+### OnLoginResponse en 150 — les 11 champs, dans l’ordre
+
+Relevé dans `Realtime/RealtimeNetRec.c` (branche `iphone`, l. 296-464) :
+
+| # | Champ | Lecture | Erreur si absent |
+|---|-------|---------|------------------|
+| 1 | `iServerID` | `ReadIntFromString` | doit être ≠ `RT_INVALID_LOGINID_VALUE` (-1) |
+| 2 | `ServerCookie` | `ExtractNetworkString` | 63 caractères max |
+| 3 | `iMyRanking` | int | |
+| 4 | `iMyTotalPoints` | int | |
+| 5 | `iMyRating` | int | |
+| 6 | `iMyPreviousRanking` | int | |
+| 7 | `iMyAddon` | int | |
+| 8 | `iPointsTimeStamp` | int | |
+| 9 | `iExclusiveMoods` | int, termine sur `,\r\n` | |
+| 10 | `iServerMaxProtocol` | int | |
+| 11 | `serverVersion` | `ExtractNetworkString` | `MAX_SERVER_VERSION` = 15 |
+
+Chaque échec pose `err_parser_unexpected_data` et sort de la boucle de réception.
+La ligne `RC,200,…` avant le tag est **obligatoire** (`VerifyStatusAndTag`, appelé
+avec `http_response_status_load(..., TRUE, ...)`).
+
+À noter, `bIsNewbie` existe dans `RTConnectionInfo` en `iphone` mais pas en
+`android` — il n’est **pas** lu par `OnLoginResponse`, donc il ne change pas le
+compte de champs. Fausse piste écartée.
+
+Codes de retour utiles (`VerifyStatus`) : `501` → `err_rt_unknown_login_id`,
+`600` → `err_as_could_not_find_matches` (recherche sans résultat, pas un crash),
+`2002` → `err_failed` non fatal. C’est ce qui justifie `RC,600` pour la recherche.
+
+---
+
+## Tuiles : le calcul est connu
+
+`roadmap_tile.c` (branche `iphone`), porté en Python dans le catcher :
+
+```
+SQUARE_SIZE = 10 000 micro-degres, SCALE_STEP = 4, MAX_SQUARE_SIZE = 30 000 000
+=> 6 echelles : 10000, 40000, 160000, 640000, 2560000, 10240000
+lignes[e]   = 179 999 999 / taille[e] + 1
+colonnes[e] = 359 999 999 / taille[e] + 1
+base[e]     = somme des lignes*colonnes des echelles precedentes
+index_lon   = (longitude + 180 000 000) / taille[e]
+index_lat   = (latitude  +  90 000 000) / taille[e]
+tuile       = base[e] + index_lon * lignes[e] + index_lat
+```
+
+Contrôle sur Lausanne (6.484638, 46.364603), échelle 0 :
+`index_lon = 18648`, `index_lat = 13636`, `tuile = 18648 × 18000 + 13636 =`
+**335677636**. Le catcher journalise ces identifiants dès le `MapDisplayed`,
+avant même que le login passe.
+
+## Cartes hors-ligne `.wzm` — la piste sérieuse
+
+`roadmap_map_download.c` : `roadmap_map_download_region()` télécharge
+`<Download.Source>/<region_code>/map<fips:05d>.wzm` vers
+`roadmap_path_preferred("maps")`, puis `roadmap_tile_reset_session()` recharge
+les tuiles. Activé par la préférence `Download.Enabled = yes`.
+
+C’est bien plus simple que de servir les tuiles une par une : un seul fichier,
+posable directement par SSH sans même passer par le réseau. Le catcher annonce
+`ServerConfig,6,Download,Source,…` et `ServerConfig,7,Download,Enabled,yes`, et
+sert le contenu de `maps/`. Reste à produire le `.wzm` — voir
+`roadmap_tile_storage.c` et `roadmap_tile_storage_sqlite.c` pour le format.
