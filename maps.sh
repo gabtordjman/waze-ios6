@@ -59,11 +59,14 @@ fi
 # rapports dans Library/Logs/CrashReporter.
 if [ "$REGION" = "--log" ]; then
   mkdir -p logs/phone
+  # roadmap_log.c ecrit dans roadmap_path_user(), dont la valeur reelle depend
+  # de HOME au lancement. On cherche le fichier au lieu de deviner le dossier.
   echo "=== Journal Waze (postmortem) ==="
   ssh $SSH_OPTS "root@${PHONE}" \
-    'for d in /var/mobile/Applications/*/ /var/mobile/Containers/Data/Application/*/; do
-       [ -f "$d/postmortem" ] && { echo "--- $d"; tail -n 200 "$d/postmortem"; }
-     done' | tee logs/phone/postmortem.txt
+    'find /var/mobile /var/root /private/var/mobile -maxdepth 4 \
+          \( -name postmortem -o -name "waze_log.txt" \) 2>/dev/null \
+     | while read f; do echo "--- $f"; tail -n 120 "$f"; done' \
+    | tee logs/phone/postmortem.txt
 
   echo
   echo "=== Rapports de crash iOS ==="
@@ -72,6 +75,14 @@ if [ "$REGION" = "--log" ]; then
             /var/logs/CrashReporter/*aze* 2>/dev/null | head -n 2 \
      | while read f; do echo "--- $f"; head -n 60 "$f"; done' \
     | tee logs/phone/crash.txt
+
+  # roadmap_db_open supprime lui-meme un fichier qu'il juge mal forme
+  # (roadmap_tile_remove). Un index disparu accuse le format ; un index encore
+  # la innocente le format et accuse la suite.
+  echo
+  echo "=== Etat du dossier des cartes ==="
+  DEST="$(find_dest)"
+  [ -n "$DEST" ] && ssh $SSH_OPTS "root@${PHONE}" "ls -l '$DEST'"
 
   echo
   echo "Copies dans logs/phone/. Colle-les moi."

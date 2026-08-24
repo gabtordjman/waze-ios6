@@ -106,6 +106,11 @@ NO_RANGE = 0xFFFF
 # Une référence de point dans une ligne est masquée par POINT_REAL_MASK et le
 # bit haut marque un point de bordure de tuile (roadmap_line.h, roadmap_point.h,
 # roadmap_screen.c). D'où 32767 points au maximum par tuile.
+# roadmap_square.c : le cache de carrés fait 512 entrées hors J2ME, et l'index
+# du prochain emplacement libre est un global qui ne décroît jamais. Au-delà,
+# l'app passe par l'éviction, un chemin bien moins éprouvé. On reste en deçà.
+SQUARE_CACHE_SIZE = 512
+
 POINT_FAKE_FLAG = 0x8000
 POINT_REAL_MASK = 0x7FFF
 MAX_POINTS_PER_TILE = POINT_REAL_MASK
@@ -751,6 +756,18 @@ def cmd_build(args) -> int:
         )
         return 1
     print(f"  {len(payloads)} tuiles vérifiées, aucune anomalie")
+
+    if len(payloads) > SQUARE_CACHE_SIZE:
+        print(
+            f"\n  ATTENTION : {len(payloads)} tuiles pour un cache de "
+            f"{SQUARE_CACHE_SIZE} (roadmap_square.c).",
+            file=sys.stderr,
+        )
+        print(
+            "  Réduis --max-scale ou la zone. Une carte plus grande que le cache\n"
+            "  force l'éviction de carrés, ce que cette version gère mal.",
+            file=sys.stderr,
+        )
 
     lons = [c[0] for _, coords in ways for c in coords]
     lats = [c[1] for _, coords in ways for c in coords]
