@@ -18,15 +18,21 @@ Le blocage actuel = format réponse `LoginSuccessful`. Le mock envoie la bonne s
 
 ---
 
-## T480 — 3 commandes (racine du repo)
+## T480 — 2 commandes
 
 ```bash
 cd /home/tordjman/Documents/Projets/waze-ios6
+sh pull.sh
+sudo sh go.sh          # reste ouvert — tu dois voir HTTP :80
+```
 
-sh pull.sh              # 1) récupère GitHub + fix CRLF
-sudo sh go.sh           # 2) catcher (garde ce terminal ouvert)
+Autre terminal : `sh phone.sh`
 
-sh phone.sh             # 3) autre terminal — patch 4S
+**Si go.sh quitte tout de suite** → mauvaise version, refais `sh pull.sh`.
+
+**Alternative directe :**
+```bash
+sudo python3 scripts/run-ultimate.py
 ```
 
 **iPhone :** Wi-Fi → DNS manuel → `192.168.1.191` → ouvre Waze.

@@ -1,15 +1,17 @@
 #!/bin/sh
-# Depuis la racine du repo sur le T480 :
+# Lance le catcher. Depuis la racine du repo :
 #   sudo sh go.sh
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT" || exit 1
 
-for f in go.sh phone.sh scripts/*.sh scripts/*.py; do
-  if [ -f "$f" ]; then
-    sed -i 's/\r$//' "$f" 2>/dev/null || true
-  fi
+for f in go.sh phone.sh pull.sh scripts/run-ultimate.py scripts/rts_catcher_min.py; do
+  [ -f "$f" ] && sed -i 's/\r$//' "$f" 2>/dev/null
 done
 
 echo "=== Waze iOS6 catcher ==="
-echo "Repo: $ROOT"
-exec sudo python3 scripts/run-ultimate.sh
+
+if [ "$(id -u)" -eq 0 ]; then
+  exec python3 "$ROOT/scripts/run-ultimate.py"
+else
+  exec sudo python3 "$ROOT/scripts/run-ultimate.py"
+fi
