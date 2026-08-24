@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import atexit
 import os
-import re
 import signal
 import socket
 import subprocess
@@ -12,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-CATCHER_REV = "login-gpl11-sc-20260824a"
+CATCHER_REV = "login-gpl11-min-20260824b"
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -54,51 +53,49 @@ print(f"CATCHER_REV={CATCHER_REV}  pid={MY_PID}", flush=True)
 print(f"PC={pc_ip}  phones={phones}", flush=True)
 
 
-def _port_bindable(port: int) -> bool:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("0.0.0.0", port))
-        return True
-    except OSError:
-        return False
-    finally:
-        s.close()
+def _stop_our_catcher() -> None:
+    """Stop only our Python catcher — never kill nginx/apache workers on :80."""
+    for pat in ("rts_catcher_min.py", "run-ultimate.py"):
+        subprocess.run(["pkill", "-9", "-f", pat], check=False)
+    time.sleep(0.8)
 
 
-def _pids_on_port(port: int) -> list[int]:
-    out: list[int] = []
+def _port_owner(port: int) -> str:
     try:
-        text = subprocess.check_output(
+        return subprocess.check_output(
             ["ss", "-ltnp", f"sport = :{port}"],
             text=True,
             stderr=subprocess.DEVNULL,
-        )
-        for m in re.finditer(r"pid=(\d+)", text):
-            pid = int(m.group(1))
-            if pid != MY_PID:
-                out.append(pid)
+        ).strip()
     except Exception:
-        pass
-    return list(dict.fromkeys(out))
+        return ""
 
 
-def _free_port(port: int) -> None:
+def _ensure_port(port: int) -> None:
     print(f"Port :{port}…", flush=True)
-    for attempt in range(6):
-        if _port_bindable(port):
-            print(f"  :{port} OK", flush=True)
-            return
-        for pid in _pids_on_port(port):
-            print(f"  kill pid {pid} (:{port})", flush=True)
-            subprocess.run(["kill", "-9", str(pid)], check=False)
-        time.sleep(0.4)
-    print(f"ERREUR: :{port} occupé — ss -ltnp sport = :{port}", flush=True)
-    sys.exit(1)
+    _stop_our_catcher()
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("0.0.0.0", port))
+        print(f"  :{port} OK", flush=True)
+        return
+    except OSError:
+        owner = _port_owner(port)
+        print(f"ERREUR: :{port} occupé par un autre service (nginx/apache ?)", flush=True)
+        if owner:
+            for line in owner.splitlines():
+                if "LISTEN" in line:
+                    print(f"  {line}", flush=True)
+        print("  → sh stop.sh  puis  sudo sh go.sh", flush=True)
+        print("  → si nginx: sudo systemctl stop nginx", flush=True)
+        sys.exit(1)
+    finally:
+        probe.close()
 
 
-_free_port(http_port)
-_free_port(https_port)
+_ensure_port(http_port)
+_ensure_port(https_port)
 
 if DNS_SCRIPT.is_file() and os.environ.get("SKIP_DNS") != "1":
     subprocess.run(["sh", str(DNS_SCRIPT)], check=False, cwd=str(ROOT))

@@ -28,7 +28,14 @@ sudo sh go.sh          # reste ouvert — tu dois voir HTTP :80
 
 Autre terminal : `sh phone.sh`
 
-**Si go.sh quitte tout de suite** → mauvaise version, refais `sh pull.sh`.
+**Si port 80 occupé (nginx/apache)** :
+```bash
+sh stop.sh
+sudo systemctl stop nginx   # si besoin
+sudo sh go.sh
+```
+
+**Si go.sh dit « déjà en cours »** : `sh stop.sh` puis relance.
 
 **Alternative directe :**
 ```bash

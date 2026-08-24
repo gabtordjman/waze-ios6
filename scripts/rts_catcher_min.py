@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=login-gpl11-sc-20260824a
+"""CATCHER_REV=login-gpl11-min-20260824b
 
 Freemap login_parser (RealtimeNetRec.c):
   - OnLoginResponse: exactly 11 CSV fields after tag, then bLoggedIn=TRUE
   - Extra CSV on same line poisons the parser → login retry
-  - Separate tagged lines OK: UpdateInboxCount, ServerConfig (handlers exist)
+  - Separate tagged lines OK: UpdateInboxCount (ServerConfig removed from login —
+    phone prefs already have Download.* URLs; ServerConfig during login can confuse
+    geo_config context)
 
-Response uses CRLF (Freemap http_response_status / line parsing).
-Login id=1 (coherent with System.ServerId: 1). ServerConfig points tiles/config at PC.
+Response uses CRLF. V2 /distrib/ → wire prefix ack\\r\\n before HTTP.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-CATCHER_REV = "login-gpl11-sc-20260824a"
+CATCHER_REV = "login-gpl11-min-20260824b"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -38,8 +39,20 @@ BASE = f"http://{PC_IP}"
 BIN_CT = "binary/octet-stream"
 
 # 11 fields after LoginSuccessful — stop at ver (no PAD tail on same line).
-LOGIN_OK = "LoginSuccessful,1,cookie1234567890,1,100,1,1,0,0,0,202,3.9.6.1"
 REGISTER_OK = "RegisterSuccessful,ios6user,ios6pass"
+
+
+def _login_line(req_body: bytes) -> str:
+    """Build LoginSuccessful; reuse ios6user from request when present."""
+    user = "ios6user"
+    for line in req_body.replace(b"\r\n", b"\n").split(b"\n"):
+        if line.lower().startswith(b"login,"):
+            parts = line.decode("latin1", errors="replace").split(",")
+            if len(parts) > 1 and parts[1].strip():
+                user = parts[1].strip()
+            break
+    cookie = f"waze{user}cookie01"
+    return f"LoginSuccessful,1,{cookie},1,100,1,1,0,0,0,202,3.9.6.1"
 
 
 def _log(msg: str) -> None:
@@ -72,16 +85,12 @@ BODY_GEO5 = _lines(
         *_server_configs(),
     ]
 )
-BODY_LOGIN = _lines(
-    [
-        "RC,200,OK",
-        LOGIN_OK,
-        "UpdateInboxCount,0",
-        *_server_configs(),
-    ]
-)
 BODY_REGISTER = _lines(["RC,200,OK", REGISTER_OK])
 BODY_RC = _lines(["RC,200,OK"])
+
+
+def _body_login(req_body: bytes) -> bytes:
+    return _lines(["RC,200,OK", _login_line(req_body), "UpdateInboxCount,0"])
 
 
 def _cmds(req_body: bytes) -> list[str]:
@@ -126,7 +135,9 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
     ):
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         _note_proto_b64(req_body)
-        return "Login→GPL11+SC+keepalive", BODY_LOGIN, False
+        body = _body_login(req_body)
+        _log(f"  login line: {_login_line(req_body)}")
+        return "Login→GPL11+Inbox+keepalive", body, False
 
     if b"register," in low:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
@@ -137,7 +148,18 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
 
     # Post-login batch (At, Stats, MapDisplayed, …) — RC,200,OK suffices
     if any(
-        c.lower() in ("at", "stats", "mapdisplayed", "location", "keepalive")
+        c.lower()
+        in (
+            "at",
+            "stats",
+            "mapdisplayed",
+            "location",
+            "keepalive",
+            "routingrequest",
+            "addresssearch",
+            "foursquaresearch",
+            "search",
+        )
         for c in cmds
     ):
         return "Realtime batch→RC", BODY_RC, False
@@ -380,7 +402,7 @@ def main() -> None:
     http_port = int(os.environ.get("CATCHER_HTTP_PORT", "80"))
     https_port = int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
     _log(f"CATCHER_REV={CATCHER_REV} → {PC_IP}")
-    _log("Login→GPL11 CRLF + ServerConfig(tiles) + keepalive.")
+    _log("Login→GPL11 CRLF + UpdateInboxCount + keepalive (no ServerConfig on login).")
 
     http_sock = _bind_listen(http_port)
     https_sock = _bind_listen(https_port)
