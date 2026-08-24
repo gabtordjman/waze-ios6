@@ -1,11 +1,12 @@
 #!/bin/sh
-# Envoie une carte sur l'iPhone :  sh maps.sh <region> [IP]
+# Cartes Waze sur l'iPhone.
 #
-#   python3 scripts/wazemap.py build --bbox 6.42,46.33,6.56,46.40 --name leman
-#   sh maps.sh leman
+#   sh maps.sh <region> [IP]   envoie map<fips>.wzm + <fips>_index.wdf
+#   sh maps.sh --clean [IP]    retire les cartes (Waze redemarre sans carte)
+#   sh maps.sh --log [IP]      recupere le journal Waze et les rapports de crash
 #
-# Deux fichiers partent ensemble : le paquet map<fips>.wzm et son index
-# <fips>_index.wdf. Le dossier cible est decouvert sur l'appareil
+# Les deux fichiers d'une carte partent toujours ensemble : roadmap_locator_open
+# ouvre l'index avant le paquet. Le dossier cible est decouvert sur l'appareil
 # (scripts/waze-maps-dir.sh), pas devine : le chemin du bundle change a chaque
 # installation.
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -16,12 +17,68 @@ PHONE="${2:-192.168.1.60}"
 
 if [ -z "$REGION" ]; then
   echo "Usage: sh maps.sh <region> [IP]"
+  echo "       sh maps.sh --clean [IP]    retire les cartes du telephone"
+  echo "       sh maps.sh --log [IP]      recupere journal et rapports de crash"
   echo
   echo "Regions disponibles dans maps/ :"
   ls -1 maps 2>/dev/null | sed 's/^/  /' || echo "  (aucune)"
   exit 1
 fi
 
+sed -i 's/\r$//' scripts/waze-maps-dir.sh 2>/dev/null || true
+
+# ControlMaster : une seule ouverture de session, donc un seul mot de passe
+# pour toutes les commandes qui suivent.
+SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o StrictHostKeyChecking=accept-new -o ControlMaster=auto -o ControlPath=/tmp/waze-ssh-%r@%h-%p -o ControlPersist=120"
+KH="$HOME/.ssh/known_hosts"
+[ "$(id -u)" = "0" ] && [ -f /root/.ssh/known_hosts ] && KH=/root/.ssh/known_hosts
+ssh-keygen -f "$KH" -R "$PHONE" 2>/dev/null || true
+
+find_dest() {
+  sed 's/\r$//' scripts/waze-maps-dir.sh \
+    | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-maps-dir.sh && sh /tmp/waze-maps-dir.sh"
+}
+
+# ── Retirer les cartes ───────────────────────────────────────────────────────
+# Sans index, roadmap_locator_open rend ROADMAP_US_NOMAP et l'app se comporte
+# comme avant la copie. C'est le moyen de la faire redemarrer si la carte la
+# fait planter.
+if [ "$REGION" = "--clean" ]; then
+  DEST="$(find_dest)"
+  [ -z "$DEST" ] && { echo "ERREUR: bundle Waze introuvable sur $PHONE."; exit 1; }
+  echo "Nettoyage de $DEST"
+  ssh $SSH_OPTS "root@${PHONE}" \
+    "killall -9 Waze waze 2>/dev/null; rm -f '$DEST'/*.wzm '$DEST'/*_index.wdf '$DEST'/city_index; ls -l '$DEST'"
+  echo
+  echo "OK. Waze devrait se relancer normalement, sans carte."
+  exit 0
+fi
+
+# ── Journal et rapports de crash ─────────────────────────────────────────────
+# roadmap_log.c ecrit dans roadmap_path_user()/postmortem ; iOS depose ses
+# rapports dans Library/Logs/CrashReporter.
+if [ "$REGION" = "--log" ]; then
+  mkdir -p logs/phone
+  echo "=== Journal Waze (postmortem) ==="
+  ssh $SSH_OPTS "root@${PHONE}" \
+    'for d in /var/mobile/Applications/*/ /var/mobile/Containers/Data/Application/*/; do
+       [ -f "$d/postmortem" ] && { echo "--- $d"; tail -n 200 "$d/postmortem"; }
+     done' | tee logs/phone/postmortem.txt
+
+  echo
+  echo "=== Rapports de crash iOS ==="
+  ssh $SSH_OPTS "root@${PHONE}" \
+    'ls -1t /var/mobile/Library/Logs/CrashReporter/*aze* \
+            /var/logs/CrashReporter/*aze* 2>/dev/null | head -n 2 \
+     | while read f; do echo "--- $f"; head -n 60 "$f"; done' \
+    | tee logs/phone/crash.txt
+
+  echo
+  echo "Copies dans logs/phone/. Colle-les moi."
+  exit 0
+fi
+
+# ── Envoi d'une carte ────────────────────────────────────────────────────────
 SRC="$ROOT/maps/$REGION"
 if [ ! -d "$SRC" ]; then
   echo "ERREUR: $SRC introuvable."
@@ -36,8 +93,6 @@ if [ -z "$WZM" ]; then
   exit 1
 fi
 
-# L'index part avec le paquet. roadmap_locator_open ouvre <fips>_index.wdf
-# avant de toucher au .wzm : sans lui la carte reste invisible, sans erreur.
 IDX="$(ls -1 "$SRC"/*_index.wdf 2>/dev/null | head -n 1)"
 if [ -z "$IDX" ]; then
   echo "ERREUR: aucun *_index.wdf dans $SRC"
@@ -46,20 +101,10 @@ if [ -z "$IDX" ]; then
   exit 1
 fi
 
-sed -i 's/\r$//' scripts/waze-maps-dir.sh 2>/dev/null || true
-
-# ControlMaster : une seule ouverture de session, donc un seul mot de passe
-# pour les trois commandes qui suivent au lieu de trois.
-SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o StrictHostKeyChecking=accept-new -o ControlMaster=auto -o ControlPath=/tmp/waze-ssh-%r@%h-%p -o ControlPersist=120"
-KH="$HOME/.ssh/known_hosts"
-[ "$(id -u)" = "0" ] && [ -f /root/.ssh/known_hosts ] && KH=/root/.ssh/known_hosts
-ssh-keygen -f "$KH" -R "$PHONE" 2>/dev/null || true
-
 echo "=== Envoi de $(basename "$WZM") ($(du -h "$WZM" | cut -f1))"
 echo "         et $(basename "$IDX") vers $PHONE ==="
 
-DEST="$(sed 's/\r$//' scripts/waze-maps-dir.sh \
-  | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-maps-dir.sh && sh /tmp/waze-maps-dir.sh")"
+DEST="$(find_dest)"
 
 if [ -z "$DEST" ]; then
   echo
@@ -69,9 +114,14 @@ if [ -z "$DEST" ]; then
 fi
 echo "Dossier cible: $DEST"
 
+# city_index est un cache construit par l'app a partir de l'ancienne carte.
+# Le laisser en place apres avoir change de carte n'a pas de sens.
+ssh $SSH_OPTS "root@${PHONE}" "killall -9 Waze waze 2>/dev/null; rm -f '$DEST/city_index'"
+
 scp $SSH_OPTS "$WZM" "$IDX" "root@${PHONE}:${DEST}/" || exit 1
 
 ssh $SSH_OPTS "root@${PHONE}" "ls -l '$DEST'"
 
 echo
 echo "OK. Relance Waze sur le telephone."
+echo "Si Waze plante :  sh maps.sh --log $PHONE   puis   sh maps.sh --clean $PHONE"

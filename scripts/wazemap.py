@@ -474,6 +474,82 @@ def build_tiles(ways, scales: list[int]) -> dict[int, TileBuilder]:
     return {tid: b for tid, b in tiles.items() if len(b)}
 
 
+# Taille des structures C de chaque section. roadmap_db_get_data refuse une
+# section dont la taille n'est pas un multiple exact, et pour les points comme
+# pour le carré l'échec est traité en ROADMAP_FATAL — donc l'app se ferme.
+SECTION_ITEM_SIZE = {
+    S_POINT_DATA: 4,        # RoadMapPoint   : 2 × unsigned short
+    S_POINT_ID: 4,          # int
+    S_LINE_DATA: 8,         # RoadMapLine    : 4 × unsigned short
+    S_LINE_BYSQUARE1: (CATEGORY_RANGE + 1) * 2 + 2 + (DIRECTION_COUNT * 2 + 1) * 2,
+    S_SQUARE_DATA: 12,      # RoadMapSquare  : 2 × int + unsigned int
+    S_METADATA_ATTRIBUTES: 8,  # RoadMapAttribute : 4 × RoadMapString
+}
+
+
+def verify_tile(tid: int, payload: bytes) -> list[str]:
+    """Rejoue les contrôles que le client fera, et rend la liste des problèmes.
+
+    Mieux vaut échouer ici que sur l'iPhone : une tuile invalide n'y produit pas
+    un message d'erreur mais un arrêt brutal, et roadmap_db_open efface au
+    passage le fichier fautif.
+    """
+    problems: list[str] = []
+    parsed = read_tile(pack_tile(payload))
+    sections = parsed["sections"]
+
+    if parsed["num_sections"] != NUM_SECTIONS:
+        problems.append(f"{parsed['num_sections']} sections au lieu de {NUM_SECTIONS}")
+
+    for sid, item in SECTION_ITEM_SIZE.items():
+        n = len(sections.get(sid, b""))
+        if n % item:
+            problems.append(f"section {sid} : {n} octets, pas un multiple de {item}")
+
+    square = sections.get(S_SQUARE_DATA, b"")
+    if len(square) != 12:
+        problems.append(f"square/data fait {len(square)} octets au lieu de 12")
+    else:
+        sq_id, sq_scale, _ = struct.unpack("<iiI", square)
+        _, _, _, _, scale = tile_edges(tid)
+        if sq_id != tid:
+            problems.append(f"square_id {sq_id} ≠ tuile {tid}")
+        if sq_scale != scale:
+            problems.append(f"scale {sq_scale} ≠ {scale} déduit de l'identifiant")
+
+    points = sections.get(S_POINT_DATA, b"")
+    lines = sections.get(S_LINE_DATA, b"")
+    n_points = len(points) // 4
+    n_lines = len(lines) // 8
+
+    # roadmap_point_position indexe sans borne hors DEBUG : un index trop grand
+    # lit hors du tampon.
+    for k in range(n_lines):
+        frm, to, _, _ = struct.unpack("<HHHH", lines[k * 8 : k * 8 + 8])
+        for label, raw in (("from", frm), ("to", to)):
+            idx = raw & POINT_REAL_MASK
+            if idx >= n_points:
+                problems.append(
+                    f"ligne {k} {label} pointe {idx}, or la tuile a {n_points} points"
+                )
+                break
+
+    bysquare = sections.get(S_LINE_BYSQUARE1, b"")
+    if n_lines and len(bysquare) != SECTION_ITEM_SIZE[S_LINE_BYSQUARE1]:
+        problems.append("des lignes sans index bysquare1 : NULL déréférencé au chargement")
+    elif bysquare:
+        cumulative = struct.unpack(f"<{CATEGORY_RANGE + 1}H", bysquare[: (CATEGORY_RANGE + 1) * 2])
+        if cumulative[CATEGORY_RANGE] != n_lines:
+            problems.append(
+                f"index cumulatif annonce {cumulative[CATEGORY_RANGE]} lignes, "
+                f"il y en a {n_lines}"
+            )
+        if list(cumulative) != sorted(cumulative):
+            problems.append("index cumulatif non croissant")
+
+    return problems
+
+
 # ── Relecture, avec exactement les contrôles du client ───────────────────────
 def read_tile(blob: bytes) -> dict:
     if len(blob) < TILE_HEADER_LEN:
@@ -590,6 +666,31 @@ def cmd_selftest() -> int:
     print(f"  {out.name}: {info['num_tiles']} tuile, {info['size']} octets  OK")
     out.unlink()
 
+    print("Contrôle des identifiants entre échelles")
+    seen: dict[int, int] = {}
+    for scale in range(len(TILE_SCALES)):
+        for lon in range(-170_000_000, 170_000_000, 37_000_000):
+            for lat in range(-80_000_000, 80_000_000, 29_000_000):
+                tid = tile_id(lon, lat, scale)
+                if tid in seen and seen[tid] != scale:
+                    raise AssertionError(f"tuile {tid} partagée par {seen[tid]} et {scale}")
+                seen[tid] = scale
+                assert tile_edges(tid)[4] == scale, (tid, scale)
+    print(f"  {len(seen)} identifiants, aucune collision entre échelles  OK")
+
+    print("Contrôle de validation d'une tuile (verify_tile)")
+    assert verify_tile(got, payload) == [], verify_tile(got, payload)
+    corrupt = dict(
+        {
+            S_POINT_DATA: struct.pack("<HH", 0, 0),
+            S_LINE_DATA: struct.pack("<HHHH", 0, 5, NO_SHAPES, NO_RANGE),
+            S_SQUARE_DATA: struct.pack("<iiI", got, 0, 0),
+        }
+    )
+    found = verify_tile(got, pack_payload(corrupt))
+    assert any("pointe 5" in p for p in found), found
+    print(f"  tuile saine acceptée, tuile fautive rejetée ({found[0]})  OK")
+
     print("Contrôle de l'index de carte (roadmap_square_map)")
     idx = read_tile(county_index_tile(1234567890))
     assert idx["num_sections"] == COUNTY_NUM_SECTIONS, idx["num_sections"]
@@ -636,6 +737,20 @@ def cmd_build(args) -> int:
 
     timestamp = int(time.time())
     payloads = {tid: b.payload(timestamp) for tid, b in tiles.items()}
+
+    bad = 0
+    for tid, payload in payloads.items():
+        for problem in verify_tile(tid, payload):
+            if bad < 10:
+                print(f"  tuile {tid} : {problem}", file=sys.stderr)
+            bad += 1
+    if bad:
+        print(
+            f"\n{bad} problème(s) : la carte ferait planter Waze, rien n'est écrit.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"  {len(payloads)} tuiles vérifiées, aucune anomalie")
 
     lons = [c[0] for _, coords in ways for c in coords]
     lats = [c[1] for _, coords in ways for c in coords]
