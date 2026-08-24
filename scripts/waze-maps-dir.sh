@@ -14,18 +14,43 @@
 #
 # Un seul dossier suffit donc pour les deux fichiers.
 # roadmap_main_bundle_path() renvoie [[NSBundle mainBundle] resourcePath],
-# c'est-a-dire le dossier Waze.app lui-meme.
+# c'est-a-dire le dossier .app lui-meme.
+#
+# Le nom du bundle n'est pas garanti : selon l'IPA c'est Waze.app, waze.app,
+# ou autre chose. On accepte donc toute casse, et a defaut tout .app qui
+# contient un binaire waze.
+
+BASES="/var/mobile/Applications
+/var/mobile/Containers/Bundle/Application
+/var/containers/Bundle/Application
+/Applications"
 
 APP=""
-for d in /var/mobile/Applications/* /var/mobile/Containers/Bundle/Application/* \
-         /var/containers/Bundle/Application/*; do
-  [ -d "$d/Waze.app" ] || continue
-  APP="$d/Waze.app"
-  break
+FOUND=""
+
+for base in $BASES; do
+  [ -d "$base" ] || continue
+  for app in "$base"/*.app "$base"/*/*.app; do
+    [ -d "$app" ] || continue
+    FOUND="$FOUND
+  $app"
+    [ -n "$APP" ] && continue
+    name=$(basename "$app")
+    case "$name" in
+      [Ww][Aa][Zz][Ee]*) APP="$app" ;;
+      *) [ -f "$app/waze" ] || [ -f "$app/Waze" ] && APP="$app" ;;
+    esac
+  done
 done
 
 if [ -z "$APP" ]; then
-  echo "ERREUR: Waze.app introuvable" >&2
+  echo "ERREUR: aucun bundle Waze trouve." >&2
+  if [ -n "$FOUND" ]; then
+    echo "Applications reperees :$FOUND" >&2
+  else
+    echo "Aucun .app sous :" >&2
+    for base in $BASES; do echo "  $base" >&2; done
+  fi
   exit 1
 fi
 

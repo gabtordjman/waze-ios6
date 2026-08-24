@@ -48,7 +48,9 @@ fi
 
 sed -i 's/\r$//' scripts/waze-maps-dir.sh 2>/dev/null || true
 
-SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o StrictHostKeyChecking=accept-new"
+# ControlMaster : une seule ouverture de session, donc un seul mot de passe
+# pour les trois commandes qui suivent au lieu de trois.
+SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o StrictHostKeyChecking=accept-new -o ControlMaster=auto -o ControlPath=/tmp/waze-ssh-%r@%h-%p -o ControlPersist=120"
 KH="$HOME/.ssh/known_hosts"
 [ "$(id -u)" = "0" ] && [ -f /root/.ssh/known_hosts ] && KH=/root/.ssh/known_hosts
 ssh-keygen -f "$KH" -R "$PHONE" 2>/dev/null || true
@@ -60,7 +62,9 @@ DEST="$(sed 's/\r$//' scripts/waze-maps-dir.sh \
   | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-maps-dir.sh && sh /tmp/waze-maps-dir.sh")"
 
 if [ -z "$DEST" ]; then
-  echo "ERREUR: dossier des cartes introuvable sur l'iPhone."
+  echo
+  echo "ERREUR: pas de bundle Waze sur $PHONE (details ci-dessus)."
+  echo "Si Waze est sur l'autre telephone :  sh maps.sh $REGION <IP>"
   exit 1
 fi
 echo "Dossier cible: $DEST"

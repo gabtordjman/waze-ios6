@@ -390,6 +390,16 @@ def split_by_tile(a: tuple[int, int], b: tuple[int, int], scale: int):
 
 
 # ── Chargement OSM ───────────────────────────────────────────────────────────
+# L'instance principale d'Overpass est souvent saturée et rend 504 sans avoir
+# rien calculé. Les miroirs servent exactement la même API.
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+
+
 def fetch_overpass(bbox: tuple[float, float, float, float]) -> list[dict]:
     west, south, east, north = bbox
     query = (
@@ -397,12 +407,33 @@ def fetch_overpass(bbox: tuple[float, float, float, float]) -> list[dict]:
         f'way["highway"]({south},{west},{north},{east});'
         "out geom;"
     )
-    url = "https://overpass-api.de/api/interpreter"
-    req = urllib.request.Request(
-        url, data=query.encode("utf-8"), headers={"User-Agent": "waze-ios6-map/1.0"}
+    payload = query.encode("utf-8")
+    last = ""
+
+    for attempt in range(2):
+        for url in OVERPASS_MIRRORS:
+            host = url.split("/")[2]
+            try:
+                req = urllib.request.Request(
+                    url, data=payload, headers={"User-Agent": "waze-ios6-map/1.0"}
+                )
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    body = resp.read().decode("utf-8")
+                print(f"  {host} : {len(body) / 1024:.0f} Kio reçus")
+                return json.loads(body).get("elements", [])
+            except Exception as exc:  # 504, coupure, JSON tronqué…
+                last = f"{host} : {exc}"
+                print(f"  {last}", file=sys.stderr)
+        if attempt == 0:
+            print("  tous les miroirs ont refusé, nouvelle tentative dans 20 s…",
+                  file=sys.stderr)
+            time.sleep(20)
+
+    raise RuntimeError(
+        f"Overpass indisponible ({last}).\n"
+        "Réduis la zone (une bbox de 0,3° est déjà grande), réessaie plus tard,\n"
+        "ou télécharge toi-même le JSON et repasse-le avec --osm."
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        return json.loads(resp.read().decode("utf-8")).get("elements", [])
 
 
 def ways_from_elements(elements: list[dict]):
@@ -580,8 +611,18 @@ def cmd_build(args) -> int:
     else:
         west, south, east, north = (float(v) for v in args.bbox.split(","))
         print(f"Interrogation d'Overpass pour {west},{south},{east},{north}…")
-        elements = fetch_overpass((west, south, east, north))
+        try:
+            elements = fetch_overpass((west, south, east, north))
+        except RuntimeError as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            return 1
         print(f"{len(elements)} éléments reçus")
+        # Un téléchargement réussi ne se reperd pas : si la suite échoue ou si
+        # tu veux réessayer avec d'autres options, --osm repart de ce fichier.
+        cache = ROOT / "logs" / f"osm-{args.name}.json"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({"elements": elements}), encoding="utf-8")
+        print(f"  copie gardée dans {cache} (réutilisable avec --osm)")
 
     ways = list(ways_from_elements(elements))
     if not ways:
