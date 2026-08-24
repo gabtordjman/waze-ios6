@@ -133,21 +133,25 @@ def _free_port(port: int) -> None:
 
 
 def _kill_stale_catchers() -> None:
-    """Previous run-ultimate / rts_catcher may still hold :80."""
+    """Kill other run-ultimate/python catchers (not this process)."""
     try:
         out = subprocess.check_output(["ps", "aux"], text=True, stderr=subprocess.DEVNULL)
     except Exception:
         return
-    my_pid = str(os.getpid())
+    my_pid = os.getpid()
+    my_ppid = os.getppid()
     for line in out.splitlines():
-        if my_pid in line:
+        if "rts_catcher_min.py" not in line and "run-ultimate.sh" not in line:
             continue
-        if "rts_catcher_min.py" in line or "run-ultimate.sh" in line:
-            parts = line.split()
-            if len(parts) >= 2 and parts[1].isdigit():
-                pid = parts[1]
-                subprocess.run(["kill", "-9", pid], check=False)
-                print(f"  stale catcher pid {pid} killed", flush=True)
+        parts = line.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            continue
+        pid = int(parts[1])
+        # Never kill self / parent (substring "1234" in "12345" was killing us)
+        if pid in (my_pid, my_ppid):
+            continue
+        subprocess.run(["kill", "-9", str(pid)], check=False)
+        print(f"  stale catcher pid {pid} killed", flush=True)
     time.sleep(0.3)
 
 
