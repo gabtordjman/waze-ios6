@@ -1,5 +1,4 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONF="$ROOT/scripts/dnsmasq-waze.conf"
 PIDFILE="$ROOT/logs/dnsmasq-waze.pid"
@@ -8,8 +7,7 @@ IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 IP="${IP:-192.168.1.191}"
 mkdir -p "$ROOT/logs"
 
-# Rewrite conf with current IP
-cat > "$CONF" <<CONF
+cat > "$CONF" <<EOF
 listen-address=${IP}
 bind-interfaces
 port=53
@@ -27,24 +25,21 @@ address=/rtserver.waze.com/${IP}
 address=/rt-old-client/${IP}
 address=/waze.com/${IP}
 address=/waze-client-resources.s3.amazonaws.com/${IP}
+address=/tiles.waze.com/${IP}
+address=/tiles1.waze.com/${IP}
+address=/tiles2.waze.com/${IP}
+address=/tiles3.waze.com/${IP}
+address=/tiles4.waze.com/${IP}
+address=/tilesworld1.waze.com/${IP}
 log-queries
 log-facility=${LOG}
-CONF
+EOF
 
-if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-  echo "dnsmasq-waze déjà actif (pid $(cat "$PIDFILE"))"
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "dnsmasq deja actif pid $(cat "$PIDFILE")"
 else
   : > "$LOG"
-  dnsmasq --conf-file="$CONF" --pid-file="$PIDFILE"
-  echo "dnsmasq-waze démarré sur ${IP}:53"
+  dnsmasq --conf-file="$CONF" --pid-file="$PIDFILE" 2>/dev/null || echo "dnsmasq skip (deja ou absent)"
 fi
 
-echo
-echo "Sur l'iPhone : Réglages → Wi-Fi → (i) → DNS → ${IP}  (seul)"
-echo "Garde aussi /etc/hosts si tu veux, mais le DNS suffit."
-echo
-echo "Test :"
-echo "  dig @${IP} A rt.waze.com"
-echo "  dig @${IP} AAAA rt.waze.com   # doit être VIDE"
-dig @"${IP}" A rt.waze.com +short
-echo -n "AAAA: "; dig @"${IP}" AAAA rt.waze.com +short; echo "(vide = OK)"
+echo "DNS iPhone -> ${IP}"

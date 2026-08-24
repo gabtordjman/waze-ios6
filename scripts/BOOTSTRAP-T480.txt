@@ -1,0 +1,13 @@
+Coller TOUT ce bloc dans le terminal T480 (une seule fois, corrige \r sans script) :
+
+cd /home/tordjman/Documents/Projets/waze-ios6
+find scripts -type f \( -name '*.sh' -o -name '*.py' \) -exec sed -i 's/\r$//' {} +
+sed -i 's/\r$//' scripts/*.sh scripts/*.py 2>/dev/null
+git fetch origin main
+git reset --hard origin/main
+find scripts -type f \( -name '*.sh' -o -name '*.py' \) -exec sed -i 's/\r$//' {} +
+sudo python3 scripts/run-ultimate.sh
+
+Puis autre terminal :
+cd /home/tordjman/Documents/Projets/waze-ios6
+sh scripts/patch-iphone.sh

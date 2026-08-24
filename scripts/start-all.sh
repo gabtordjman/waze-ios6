@@ -1,17 +1,18 @@
-#!/bin/bash
-# Lance tout depuis la racine du repo (waze-ios6).
+#!/bin/sh
+# Depuis la racine :  sudo sh scripts/start-all.sh
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
-echo "=== Waze iOS6 — démarrage ($ROOT) ==="
+echo "=== Waze iOS6 demarrage ==="
 
 for f in scripts/run-ultimate.sh scripts/rts_catcher_min.py scripts/waze-patch.sh scripts/patch-iphone.sh; do
-  [ -f "$f" ] && sed -i 's/\r$//' "$f"
+  if [ -f "$f" ]; then
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+  fi
 done
 
-echo
-echo "Patch iPhone 4S (.60) :  sh scripts/patch-iphone.sh"
-echo "Patch autre (.61)     :  sh scripts/patch-iphone.sh 192.168.1.61"
-echo "Wi-Fi iPhone → DNS = 192.168.1.191"
-echo
+echo ""
+echo "Patch 4S: sh scripts/patch-iphone.sh"
+echo "DNS iPhone: 192.168.1.191"
+echo ""
 exec sudo python3 scripts/run-ultimate.sh
