@@ -1,0 +1,7 @@
+{
+  "Enabled": true,
+  "ForceProxy": true,
+  "KillSSL": true,
+  "ProxyHost": "192.168.1.191",
+  "ProxyPort": 8080
+}

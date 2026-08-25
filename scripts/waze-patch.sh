@@ -126,7 +126,7 @@ grep -v '^Tiles.Last Session:' | \
 grep -v '^Tiles.Loading session lifetime:' | \
 grep -v '^Scoreboard.Feature enabled:' | \
 grep -v '^Scoreboard.Url:' | \
-grep -v 'Secho' | \
+grep -v '^User.Show points ticker:' | \
 grep -v 'Webho' > /tmp/wpref.n
 
 echo "System.ServerId: 1" >> /tmp/wpref.n
@@ -144,7 +144,13 @@ echo "Realtime.Auto registration: Disabled" >> /tmp/wpref.n
 echo "Realtime.Name: ios6user" >> /tmp/wpref.n
 echo "Realtime.Password: ios6pass" >> /tmp/wpref.n
 echo "Realtime.Nickname: ios6user" >> /tmp/wpref.n
-# Carte 100 % locale — pas de Download.Tiles (URLs /-0002_… si comté non activé).
+# Tuiles HTTP : rafraîchir la carte + compléter au pan (Download.Tiles).
+# Paquet .wzm aussi servi via Download.Source pour re-téléchargement complet.
+echo "Download.Tiles: http://$PC/tiles" >> /tmp/wpref.n
+echo "Download.Source: http://$PC/maps" >> /tmp/wpref.n
+echo "Download.Map name: auto" >> /tmp/wpref.n
+echo "Download.Enabled: yes" >> /tmp/wpref.n
+echo "User.Show points ticker: yes" >> /tmp/wpref.n
 echo "Download.Config: http://$PC/resources/config/" >> /tmp/wpref.n
 echo "Download.Langs: http://$PC/resources/langs/" >> /tmp/wpref.n
 echo "Download.Images: http://$PC/resources/images/" >> /tmp/wpref.n
@@ -158,7 +164,6 @@ echo "Navigation.Guidance type default: Minimal" >> /tmp/wpref.n
 echo "Prompts.Name: fra" >> /tmp/wpref.n
 echo "System.Language: fra" >> /tmp/wpref.n
 echo "System.Default Language: fra" >> /tmp/wpref.n
-echo "Download.Enabled: no" >> /tmp/wpref.n
 echo "Map.Static County: 77001" >> /tmp/wpref.n
 echo "Editor.Gray scale: no" >> /tmp/wpref.n
 echo "Display.Auto night mode: no" >> /tmp/wpref.n
@@ -316,8 +321,10 @@ killall -9 Waze waze 2>/dev/null
 echo "=== VERIF ==="
 grep 'Status:' "$PREF"
 grep 'Download.Enabled' "$PREF"
+grep 'Download.Tiles' "$PREF"
+grep 'User.Show points ticker' "$PREF"
 grep 'Map.Static' "$PREF"
-grep '^Download.Tiles:' "$PREF" && echo "ERREUR: Download.Tiles encore actif" >&2 || echo "Download.Tiles: absent (OK)"
+grep '^Download.Tiles:' "$PREF" >/dev/null && echo "Download.Tiles: OK" || echo "ERREUR: Download.Tiles absent" >&2
 grep '^Realtime.Name:' "$USERF"
 echo "--- bundle/maps ---"
 ls -la "$BUNDLE_MAPS" 2>/dev/null || true

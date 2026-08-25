@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>entry</key>
+  <dict>
+    <key>cell</key>
+    <string>PSLinkCell</string>
+    <key>label</key>
+    <string>WazeIOS6Fix</string>
+    <key>icon</key>
+    <string>icon.png</string>
+  </dict>
+  <key>items</key>
+  <array>
+    <dict>
+      <key>cell</key>
+      <string>PSGroupCell</string>
+      <key>label</key>
+      <string>Waze ignore le proxy Wi-Fi — on le force ici</string>
+    </dict>
+    <dict>
+      <key>cell</key>
+      <string>PSSwitchCell</string>
+      <key>default</key>
+      <true/>
+      <key>defaults</key>
+      <string>com.wazeios6.fix</string>
+      <key>key</key>
+      <string>Enabled</string>
+      <key>label</key>
+      <string>Activer</string>
+    </dict>
+    <dict>
+      <key>cell</key>
+      <string>PSSwitchCell</string>
+      <key>default</key>
+      <true/>
+      <key>defaults</key>
+      <string>com.wazeios6.fix</string>
+      <key>key</key>
+      <string>ForceProxy</string>
+      <key>label</key>
+      <string>Forcer le proxy HTTP</string>
+    </dict>
+    <dict>
+      <key>cell</key>
+      <string>PSSwitchCell</string>
+      <key>default</key>
+      <true/>
+      <key>defaults</key>
+      <string>com.wazeios6.fix</string>
+      <key>key</key>
+      <string>KillSSL</string>
+      <key>label</key>
+      <string>Bypass SSL (SecTrust)</string>
+    </dict>
+    <dict>
+      <key>cell</key>
+      <string>PSGroupCell</string>
+      <key>label</key>
+      <string>Proxy mitmweb</string>
+    </dict>
+    <dict>
+      <key>cell</key>
+      <string>PSEditTextCell</string>
+      <key>defaults</key>
+      <string>com.wazeios6.fix</string>
+      <key>key</key>
+      <string>ProxyHost</string>
+      <key>label</key>
+      <string>IP du PC</string>
+      <key>default</key>
+      <string>192.168.1.191</string>
+    </dict>
+    <dict>
+      <key>cell</key>
+      <string>PSEditTextCell</string>
+      <key>defaults</key>
+      <string>com.wazeios6.fix</string>
+      <key>key</key>
+      <string>ProxyPort</string>
+      <key>label</key>
+      <string>Port</string>
+      <key>default</key>
+      <string>8080</string>
+      <key>keyboard</key>
+      <string>NumberPad</string>
+      <key>isNumeric</key>
+      <true/>
+    </dict>
+  </array>
+  <key>title</key>
+  <string>WazeIOS6Fix</string>
+</dict>
+</plist>

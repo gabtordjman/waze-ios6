@@ -2,15 +2,20 @@
 """Sert les tuiles HTTP /tiles/.../*.wdf depuis map77001.wzm.
 
 Waze 2.4 avec Download.Tiles=http://PC/tiles telecharge chaque carre
-individuellement (roadmap_tile_storage.c). Sans reponse → carte vide malgre
-le login OK. Ce module extrait les blobs du .wzm genere par wazemap.py.
+individuellement (roadmap_tile_manager.c). Format d'URL :
+  {prefix}/77001_XX/77001_XXXX/77001_XXXXXX/77001_XXXXXXXX.wdf?sessionid=N
+
+Sans reponse valide le rafraichissement carte bloque (~3%) et le .wzm local
+supprime laisse la carte vide au redemarrage.
 """
 
 from __future__ import annotations
 
+import ctypes
 import re
 import struct
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +31,7 @@ _TILE_RE = re.compile(r"77001_([0-9a-fA-F]{8})\.wdf")
 
 _lock = threading.Lock()
 _cache: dict[int, bytes] = {}
+_stub_cache: dict[int, bytes] = {}
 _wzm_mtime: float = 0.0
 _served = 0
 
@@ -54,22 +60,39 @@ def _load_wzm() -> dict[int, bytes]:
     return out
 
 
+def _stub_tile(tid: int) -> bytes:
+    hit = _stub_cache.get(tid)
+    if hit:
+        return hit
+    from wazemap import TileBuilder, pack_tile
+
+    wdf = pack_tile(
+        TileBuilder(ctypes.c_int32(tid).value).payload(int(time.time()))
+    )
+    _stub_cache[tid] = wdf
+    return wdf
+
+
 def tile_id_from_path(path: str) -> int | None:
-    name = Path(path).name
+    name = Path(path).name.split("?", 1)[0]
     m = _TILE_RE.search(name)
     if not m:
         return None
     return int(m.group(1), 16)
 
 
-def get_tile(path: str) -> bytes | None:
-    """Retourne le .wdf complet ou None."""
+def get_tile(path: str, *, allow_stub: bool = True) -> tuple[bytes | None, str]:
+    """Retourne (blob .wdf, kind) avec kind in ('wzm', 'stub', '')."""
     tid = tile_id_from_path(path)
     if tid is None:
-        return None
+        return None, ""
     with _lock:
-        tiles = _load_wzm()
-        return tiles.get(tid)
+        hit = _load_wzm().get(tid)
+        if hit:
+            return hit, "wzm"
+        if allow_stub:
+            return _stub_tile(tid), "stub"
+        return None, ""
 
 
 def stats() -> tuple[int, int]:
@@ -77,6 +100,7 @@ def stats() -> tuple[int, int]:
         return len(_cache), _served
 
 
-def note_served() -> None:
+def note_served(kind: str = "wzm") -> None:
     global _served
+    _ = kind
     _served += 1

@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import re
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Literal
 
 ROOT = Path(__file__).resolve().parents[1]
 WAZEMAP = ROOT / "scripts" / "wazemap.py"
@@ -48,6 +50,54 @@ def coords_sane(lon: float, lat: float) -> bool:
 
 _lock = threading.Lock()
 _busy = False
+_job_q: queue.Queue[tuple[Literal["build", "expand"], float, float, bool]] = (
+    queue.Queue()
+)
+_worker_started = False
+
+
+def _drain_jobs() -> None:
+    global _busy
+    while True:
+        kind, lon, lat, force = _job_q.get()
+        try:
+            with _lock:
+                _busy = True
+            if kind == "build":
+                build_sync(lon, lat, force=force)
+            else:
+                expand_sync(lon, lat)
+        except Exception as exc:
+            print(f"  map job {kind} FAIL: {type(exc).__name__}: {exc}", flush=True)
+        finally:
+            with _lock:
+                _busy = False
+            _job_q.task_done()
+
+
+def _ensure_worker() -> None:
+    global _worker_started
+    with _lock:
+        if _worker_started:
+            return
+        _worker_started = True
+    threading.Thread(target=_drain_jobs, daemon=True, name="map-auto-worker").start()
+
+
+def _enqueue(
+    kind: Literal["build", "expand"],
+    lon: float,
+    lat: float,
+    *,
+    force: bool = False,
+) -> None:
+    _ensure_worker()
+    with _lock:
+        pending = _job_q.qsize()
+    if pending > 8:
+        print(f"  file carte pleine ({pending}) — job {kind} ignoré", flush=True)
+        return
+    _job_q.put((kind, lon, lat, force))
 
 
 def _load_state() -> dict:
@@ -151,23 +201,12 @@ def schedule_build(lon: float, lat: float, *, force: bool = False) -> None:
     if not coords_sane(lon, lat):
         return
 
-    def _run() -> None:
-        global _busy
-        with _lock:
-            if _busy:
-                return
-            state = _load_state()
-            out_wzm = ROOT / "maps" / REGION / "map77001.wzm"
-            if not force and out_wzm.is_file() and not _moved_enough(lon, lat, state):
-                return
-            _busy = True
-        try:
-            build_sync(lon, lat, force=force)
-        finally:
-            with _lock:
-                _busy = False
-
-    threading.Thread(target=_run, daemon=True).start()
+    with _lock:
+        state = _load_state()
+        out_wzm = ROOT / "maps" / REGION / "map77001.wzm"
+        if not force and out_wzm.is_file() and not _moved_enough(lon, lat, state):
+            return
+    _enqueue("build", lon, lat, force=force)
 
 
 HALF_EXPAND_DEG = 0.025  # ~2,8 km autour d'un point hors carte
@@ -266,22 +305,7 @@ def schedule_expand(lon: float, lat: float) -> None:
     bbox_u = _current_bbox_u()
     if bbox_u is not None and not _needs_expand(lon, lat, bbox_u):
         return
-
-    def _run() -> None:
-        global _busy
-        with _lock:
-            if _busy:
-                return
-            _busy = True
-        try:
-            expand_sync(lon, lat)
-        except Exception as exc:
-            print(f"  expansion FAIL: {type(exc).__name__}: {exc}", flush=True)
-        finally:
-            with _lock:
-                _busy = False
-
-    threading.Thread(target=_run, daemon=True).start()
+    _enqueue("expand", lon, lat)
 
 
 def coords_from_log() -> tuple[float, float] | None:

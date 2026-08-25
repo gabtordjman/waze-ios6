@@ -86,5 +86,8 @@ if [ -d "$ENG_SRC" ]; then
   scp $SSH_OPTS "$ENG_SRC"/* "root@${PHONE}:/tmp/waze-sound-eng/"
 fi
 
+PC_IP="$(cd "$ROOT" && python3 -c "import sys; sys.path.insert(0,'scripts'); from waze_env import server_ip; print(server_ip())" 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
+PC_IP="${PC_IP:-192.168.1.191}"
+
 sed 's/\r$//' "$ROOT/scripts/waze-cache-maps.sh" | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-cache-maps.sh"
-sed 's/\r$//' "$PATCH" | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-patch.sh && sh /tmp/waze-patch.sh"
+sed 's/\r$//' "$PATCH" | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-patch.sh && PC='$PC_IP' sh /tmp/waze-patch.sh"

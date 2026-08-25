@@ -1,0 +1,9 @@
+Package: com.wazeios6.fix
+Name: WazeIOS6Fix
+Depends: mobilesubstrate, preferenceloader
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: Force HTTP proxy + SSL bypass for legacy Waze on iOS 6
+Maintainer: waze-ios6
+Author: waze-ios6
+Section: Tweaks

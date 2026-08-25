@@ -1,0 +1,15 @@
+Package: com.wazeios6.server
+Version: 1.0.0
+Architecture: iphoneos-arm
+Maintainer: waze-ios6
+Depends: firmware (>= 5.0)
+Filename: ./com.wazeios6.server_1.0.0_iphoneos-arm.deb
+Size: 2660
+MD5sum: fc058a6d7f6f34c84d6bf5f34430472b
+SHA1: a67f6811396974d4d7767600ea01ef25e81803c2
+SHA256: 79036ddccdedaa52c1615737ebe5ba65d634b0f4cd91b12863b44e5b50d26adf
+Section: Tweaks
+Description: Redirige Waze 2.4 vers le serveur communautaire waze-ios6.
+ Installe prefs, hosts et carte starter. Compte par defaut : ios6user / ios6pass.
+Name: Waze iOS6 Server
+

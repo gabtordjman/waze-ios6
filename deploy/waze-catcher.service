@@ -1,0 +1,18 @@
+[Unit]
+Description=Waze iOS6 mock RTS server (VPS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/waze-ios6
+EnvironmentFile=-/opt/waze-ios6/.env
+ExecStart=/usr/bin/python3 /opt/waze-ios6/scripts/run-ultimate.py
+Restart=on-failure
+RestartSec=5
+
+# Ports 80/443 → lancer en root, ou adapter CATCHER_HTTP_PORT
+# User=root
+
+[Install]
+WantedBy=multi-user.target

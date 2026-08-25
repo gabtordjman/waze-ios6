@@ -1,9 +1,17 @@
-/logs
-/tweak
+.env
+.env.local
 __pycache__/
 *.pyc
 /branch-iphone
-# Cartes generees : chacun construit sa region avec scripts/wazemap.py.
-# Un .wzm suisse n'aide personne aux Etats-Unis, et ca pese des Mio.
-/maps/
-/tiles/
+/tweak/stage/
+
+# Runtime (généré sur le VPS)
+/logs/*
+!/logs/.gitkeep
+/maps/*
+!/maps/.gitkeep
+/tiles/*
+!/tiles/.gitkeep
+
+# Artefacts Cydia locaux (régénérés par make-repo / build-deb)
+/cydia/debs/*.deb

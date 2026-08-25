@@ -1,0 +1,46 @@
+name: Release tweak
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_ip:
+        description: VPS public IP baked into the deb
+        required: true
+      version:
+        description: Package version
+        default: "1.0.0"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dpkg
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev
+
+      - name: Build deb
+        run: sh tweak/build-deb.sh "${{ github.event.inputs.server_ip }}" "${{ github.event.inputs.version }}"
+
+      - name: Update Cydia index
+        run: sh cydia/make-repo.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cydia-deb
+          path: |
+            cydia/debs/*.deb
+            cydia/Packages
+            cydia/Packages.bz2
+            cydia/Release
+
+      - name: Commit repo index (optional branch push)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add cydia/
+          git diff --staged --quiet || git commit -m "cydia: release ${{ github.event.inputs.version }} for ${{ github.event.inputs.server_ip }}"
+          git push || true

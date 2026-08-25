@@ -38,7 +38,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
@@ -82,8 +82,12 @@ RES = ROOT / "mitm" / "fake-resources"
 TILES = ROOT / "tiles"   # tuiles brutes, nommées par identifiant roadmap_tile
 MAPS = ROOT / "maps"     # paquets hors-ligne <region>/map<fips>.wzm
 
-PC_IP = os.environ.get("PC_IP", "192.168.1.191").strip()
-BASE = f"http://{PC_IP}"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from waze_env import apply_to_environ, base_url, server_ip  # noqa: E402
+
+apply_to_environ()
+PC_IP = server_ip()
+BASE = base_url()
 BIN_CT = "binary/octet-stream"
 
 try:
@@ -125,7 +129,7 @@ except ImportError:
         return ["RC,200,OK"]
 
     def total_points() -> int:
-        return 100
+        return 0
 
 try:
     from waze_users import note_presence, scoreboard_html, user_poll_lines
@@ -136,7 +140,7 @@ except ImportError:
     def user_poll_lines(_peer: str = "") -> list[str]:
         return []
 
-    def scoreboard_html(_pts: int, _name: str = "ios6user", lang: str = "fra") -> bytes:
+    def scoreboard_html(_pts: int, _name: str = "ios6user", lang: str = "fra", **kwargs) -> bytes:
         return b"<html><body>Scoreboard</body></html>"
 
 _ROUTE_IMPORT_ERR = ""
@@ -338,7 +342,7 @@ def _variants(user: str, proto: int = 202) -> list[tuple[str, list[str]]]:
     """Formats candidats pour LoginSuccessful, du plus probable au plus exotique."""
     cookie = f"waze{user}cookie01"
     # id, cookie, rank, points, rating, prevRank, addon, pointsTs, moods, maxProto
-    head = f"1,{cookie},1,100,1,1,0,0,0,{proto}"
+    head = f"1,{cookie},1,{total_points()},1,1,0,0,0,{proto}"
     ver = "3.9.6.1"
     out: list[tuple[str, list[str]]] = []
 
@@ -507,8 +511,9 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Exit", "Delta1", "1"),
         ("Exit", "Color1", "#E6D09A"),
         ("Download", "Source", f"{BASE}/maps"),
+        ("Download", "Map name", "auto"),
+        ("Download", "Enabled", "yes"),
         ("Map", "Static County", str(WORLD_FIPS)),
-        ("Download", "Enabled", "no"),
         # Recherche d'adresses (single_search / address_search → /rtserver/mozi*).
         ("Single Search", "Web-Service Address", f"{BASE}/rtserver"),
         ("Address Search", "Web-Service Address", f"{BASE}/rtserver"),
@@ -519,6 +524,7 @@ def _server_params() -> list[tuple[str, str, str]]:
         # iPhone WEB_SCOREBOARD ouvre http://www.waze.com (roadmap_scoreboard.m).
         ("Scoreboard", "Feature enabled", "yes"),
         ("Scoreboard", "Url", f"{BASE}/scoreboard"),
+        ("User", "Show points ticker", "yes"),
     ]
 
 
@@ -634,6 +640,24 @@ def _note_map_displayed(req_body: bytes) -> None:
     _schedule_map_expand(lon, lat)
 
 
+def _bridge_to_res_lines(req_body: bytes) -> list[str]:
+    """BridgeToRes pour chaque BridgeTo du batch (RealtimeNetDefs.h)."""
+    out: list[str] = []
+    for line in req_body.replace(b"\r\n", b"\n").split(b"\n"):
+        if not line.lower().startswith(b"bridgeto,"):
+            continue
+        parts = line.decode("latin1", errors="replace").split(",")
+        if len(parts) >= 2 and parts[1].strip():
+            svc = parts[1].strip()
+            out.append(f"BridgeToRes,{svc},200,0")
+    return out
+
+
+def _realtime_tail(req_body: bytes, extra: list[str]) -> list[str]:
+    rows = ["RC,200,OK", *_bridge_to_res_lines(req_body), *extra]
+    return rows
+
+
 def _classify(req_body: bytes, path: str = "", peer: str = "") -> tuple[str, bytes, bool]:
     low = req_body.lower()
     pl = path.lower()
@@ -744,6 +768,9 @@ def _classify(req_body: bytes, path: str = "", peer: str = "") -> tuple[str, byt
             _log("  ReportAlert parse FAIL")
             return "Report→RC200", BODY_RC, False
         rows = report_alert_response(parsed)
+        bridge = _bridge_to_res_lines(req_body)
+        if bridge:
+            rows = ["RC,200,OK", *bridge, *rows[1:]]
         _log(f"  report type={parsed['type']} id={rows[-1].split(',')[1] if rows else '?'}")
         return "Report→AddAlert", _lines(rows), False
 
@@ -760,7 +787,11 @@ def _classify(req_body: bytes, path: str = "", peer: str = "") -> tuple[str, byt
             n_al = sum(1 for r in extra if r.startswith("AddAlert"))
             n_u = sum(1 for r in extra if r.startswith("AddUser"))
             _log(f"  → {n_al} alerte(s), {n_u} wazer(s)")
-            return "Realtime→live", _lines(["RC,200,OK", *extra]), False
+            return "Realtime→live", _lines(_realtime_tail(req_body, extra)), False
+
+    bridge = _bridge_to_res_lines(req_body)
+    if bridge:
+        return "Realtime→BridgeTo", _lines(_realtime_tail(req_body, [])), False
 
     return "Realtime→RC200", BODY_RC, False
 
@@ -910,6 +941,35 @@ def _guess_ct(path: str, data: bytes) -> str:
     return "application/octet-stream"
 
 
+def _scoreboard_query(raw_path: str) -> dict[str, str]:
+    q = parse_qs(urlparse(raw_path).query)
+    def one(key: str, default: str = "") -> str:
+        v = q.get(key) or []
+        return (v[0] if v else default).strip()
+    period = one("period", "weekly").lower()
+    if period not in ("weekly", "all"):
+        period = "weekly"
+    geography = one("geography", "country").lower()
+    lang = one("lang", "fra").lower()
+    if lang.startswith("en"):
+        lang = "eng"
+    try:
+        width = max(240, min(480, int(one("width", "320") or "320")))
+    except ValueError:
+        width = 320
+    try:
+        height = max(300, min(600, int(one("height", "400") or "400")))
+    except ValueError:
+        height = 400
+    return {
+        "period": period,
+        "geography": geography,
+        "lang": lang,
+        "width": str(width),
+        "height": str(height),
+    }
+
+
 def _is_scoreboard_get(path: str, head: bytes) -> bool:
     p = path.lower().split("?", 1)[0].rstrip("/") or "/"
     if p in ("/scoreboard", "/was/mvc/scoreboard") or p.startswith("/was/"):
@@ -945,9 +1005,11 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
             first = head.split(b"\r\n", 1)[0].decode("latin1", errors="replace")
             _log(f"{peer} {scheme.upper()} {first}")
             path = "/"
+            raw_path = "/"
             parts = first.split(" ")
             if len(parts) >= 2:
-                path = parts[1].split("?", 1)[0]
+                raw_path = parts[1]
+                path = raw_path.split("?", 1)[0]
 
             is_rts = "POST" in first and (
                 "/rtserver" in path
@@ -979,8 +1041,17 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
 
             if "GET" in first:
                 if _is_scoreboard_get(path, head):
-                    html = scoreboard_html(total_points(), "ios6user", "fra")
-                    _log(f"  ★ scoreboard {path}")
+                    sq = _scoreboard_query(raw_path)
+                    html = scoreboard_html(
+                        total_points(),
+                        "ios6user",
+                        sq["lang"],
+                        period=sq["period"],
+                        geography=sq["geography"],
+                        width=int(sq["width"]),
+                        height=int(sq["height"]),
+                    )
+                    _log(f"  ★ scoreboard {path} period={sq['period']} geo={sq['geography']}")
                     conn.sendall(
                         _http_envelope(
                             html,
@@ -992,10 +1063,7 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                     continue
                 is_tile = "/tiles" in path.lower()
                 if is_tile:
-                    # Pas de stub vide : ça pollue le cache iOS (tuiles France
-                    # vides) et empêche une vraie carte plus tard. 404 = néant
-                    # hors zone. La carte locale reste celle du .wzm.
-                    blob, kind = _get_wzm_tile(path, allow_stub=False)
+                    blob, kind = _get_wzm_tile(path, allow_stub=True)
                     if blob:
                         _note_tile_served(kind)
                         _log(
@@ -1114,7 +1182,7 @@ def main() -> None:
     _log("Remise à zéro du balayage: rm logs/login-variant.txt")
     _log(f"Carte annoncée: Map.Static County={WORLD_FIPS}.")
     _log("  Carte = maps/auto. Expansion Overpass si dest/pan hors bbox (fusion, pas d'écrasement).")
-    _log("  Nav = segments wzm (zoom rue) + RoutePoints OSRM (dézoom). Tuiles = wzm only.")
+    _log("  Nav = segments wzm (zoom rue) + RoutePoints OSRM (dézoom). Tuiles HTTP + stub.")
     _log(wzm_status_line())
 
     http_sock = _bind_listen(http_port)

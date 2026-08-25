@@ -1,0 +1,182 @@
+#!/bin/sh
+# Bootstrap Waze 2.4 pour serveur communautaire (postinst du .deb).
+# @WAZE_SERVER_IP@ remplacé au build.
+
+set -e
+
+SERVER="@WAZE_SERVER_IP@"
+
+find_bundle() {
+  for base in \
+    /var/mobile/Applications \
+    /var/mobile/Containers/Bundle/Application \
+    /var/containers/Bundle/Application \
+    /Applications
+  do
+    [ -d "$base" ] || continue
+    for app in "$base"/*.app "$base"/*/*.app; do
+      [ -d "$app" ] || continue
+      name=$(basename "$app")
+      case "$name" in
+        [Ww][Aa][Zz][Ee]*) echo "$app"; return 0 ;;
+      esac
+      if [ -f "$app/waze" ] || [ -f "$app/Waze" ]; then
+        echo "$app"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+if [ -n "$APP" ] && [ -d "$APP/Waze.app" ]; then
+  BUNDLE_DIR="$APP/Waze.app"
+  CONTAINER="$APP"
+elif [ -n "$APP" ] && [ -d "$APP/waze.app" ]; then
+  BUNDLE_DIR="$APP/waze.app"
+  CONTAINER="$APP"
+else
+  BUNDLE_DIR=$(find_bundle) || true
+  [ -n "$BUNDLE_DIR" ] && CONTAINER=$(dirname "$BUNDLE_DIR")
+fi
+
+[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] || {
+  echo "FAIL: Waze introuvable"
+  exit 1
+}
+
+PREF="$CONTAINER/Documents/preferences"
+BUNDLE="$BUNDLE_DIR/preferences"
+USERF="$CONTAINER/Documents/user"
+BUNDLE_MAPS="$BUNDLE_DIR/maps"
+RES="/usr/share/waze-ios6"
+
+killall -9 Waze waze 2>/dev/null || true
+
+[ -f "$BUNDLE" ] || { echo "FAIL: pas de bundle preferences"; exit 1; }
+[ -f "$PREF" ] || cp "$BUNDLE" "$PREF"
+
+for dom in rt.waze.com www.waze.com waze.com row.waze.com config.waze.com desc.waze.com rtserver.waze.com; do
+  grep -q "[[:space:]]$dom" /etc/hosts 2>/dev/null || echo "$SERVER $dom" >> /etc/hosts
+done
+
+grep -v '^GeoConfig.version:' "$PREF" | \
+grep -v '^GeoConfig.Web-Service Address:' | \
+grep -v '^Realtime.Web-Service Address:' | \
+grep -v '^Realtime.Web-Service Secured Address:' | \
+grep -v '^Realtime.Web-Service Secured Address Resolved:' | \
+grep -v '^Realtime.Web-Service Secure Enabled' | \
+grep -v '^Realtime.Web-Service Secured Commands:' | \
+grep -v '^Realtime.Web-Service V2 Suffix:' | \
+grep -v '^Realtime.Web-Service V2 Commands:' | \
+grep -v '^Realtime.Status:' | \
+grep -v '^Realtime.Auto registration:' | \
+grep -v '^Realtime.Name:' | \
+grep -v '^Realtime.Password:' | \
+grep -v '^Realtime.Nickname:' | \
+grep -v '^Download.Tiles:' | \
+grep -v '^Download.Config:' | \
+grep -v '^Download.Langs:' | \
+grep -v '^Download.Images:' | \
+grep -v '^Download.Sound:' | \
+grep -v '^Download.Source:' | \
+grep -v '^Download.Enabled:' | \
+grep -v '^Download.Map name:' | \
+grep -v '^TTS.Feature Enabled:' | \
+grep -v '^Navigation.Navigation guidance on:' | \
+grep -v '^Navigation.Navigation guidance enabled:' | \
+grep -v '^Navigation.Navigation guidance type:' | \
+grep -v '^Navigation.Guidance type default:' | \
+grep -v '^Prompts.Name:' | \
+grep -v '^System.Language:' | \
+grep -v '^System.Default Language:' | \
+grep -v '^Map.Static County:' | \
+grep -v '^Scoreboard.Feature enabled:' | \
+grep -v '^Scoreboard.Url:' | \
+grep -v '^User.Show points ticker:' | \
+grep -v '^System.ServerId:' > /tmp/wpref.n
+
+# Pas de System.ServerId: 1 → GetGeoServerConfig au login pousse la config serveur.
+echo "GeoConfig.version: 1" >> /tmp/wpref.n
+echo "GeoConfig.Web-Service Address: http://$SERVER/rtserver" >> /tmp/wpref.n
+echo "Realtime.Web-Service Address: http://$SERVER/rtserver" >> /tmp/wpref.n
+echo "Realtime.Web-Service Secured Address: http://$SERVER/rtserver" >> /tmp/wpref.n
+echo "Realtime.Web-Service Secured Address Resolved: http://$SERVER/rtserver" >> /tmp/wpref.n
+echo "Realtime.Web-Service Secure Enabled Client_2_3: no" >> /tmp/wpref.n
+echo "Realtime.Web-Service Secured Commands:" >> /tmp/wpref.n
+echo "Realtime.Web-Service V2 Suffix:" >> /tmp/wpref.n
+echo "Realtime.Web-Service V2 Commands: RoutingRequest" >> /tmp/wpref.n
+echo "Realtime.Status: Enabled" >> /tmp/wpref.n
+echo "Realtime.Auto registration: Disabled" >> /tmp/wpref.n
+echo "Realtime.Name: ios6user" >> /tmp/wpref.n
+echo "Realtime.Password: ios6pass" >> /tmp/wpref.n
+echo "Realtime.Nickname: ios6user" >> /tmp/wpref.n
+echo "Download.Tiles: http://$SERVER/tiles" >> /tmp/wpref.n
+echo "Download.Source: http://$SERVER/maps" >> /tmp/wpref.n
+echo "Download.Map name: auto" >> /tmp/wpref.n
+echo "Download.Enabled: yes" >> /tmp/wpref.n
+echo "Download.Config: http://$SERVER/resources/config/" >> /tmp/wpref.n
+echo "Download.Langs: http://$SERVER/resources/langs/" >> /tmp/wpref.n
+echo "Download.Images: http://$SERVER/resources/images/" >> /tmp/wpref.n
+echo "Download.Sound: http://$SERVER/resources/sounds/" >> /tmp/wpref.n
+echo "TTS.Feature Enabled: no" >> /tmp/wpref.n
+echo "Navigation.Navigation guidance on: yes" >> /tmp/wpref.n
+echo "Navigation.Navigation guidance enabled: yes" >> /tmp/wpref.n
+echo "Navigation.Navigation guidance type: Minimal" >> /tmp/wpref.n
+echo "Navigation.Guidance type default: Minimal" >> /tmp/wpref.n
+echo "Prompts.Name: fra" >> /tmp/wpref.n
+echo "System.Language: fra" >> /tmp/wpref.n
+echo "System.Default Language: fra" >> /tmp/wpref.n
+echo "Map.Static County: 77001" >> /tmp/wpref.n
+echo "Scoreboard.Feature enabled: yes" >> /tmp/wpref.n
+echo "Scoreboard.Url: http://$SERVER/scoreboard" >> /tmp/wpref.n
+echo "User.Show points ticker: yes" >> /tmp/wpref.n
+cp /tmp/wpref.n "$PREF"
+cp /tmp/wpref.n "$BUNDLE"
+
+if [ -f "$USERF" ]; then
+  grep -v '^Realtime.Name:' "$USERF" | \
+  grep -v '^Realtime.Password:' | \
+  grep -v '^Realtime.Nickname:' | \
+  grep -v '^Welcome Wizard.First time:' | \
+  grep -v '^Welcome Wizard.Terms of Use accepted:' > /tmp/wuser.n
+else
+  cp /dev/null /tmp/wuser.n
+fi
+echo "Realtime.Name: ios6user" >> /tmp/wuser.n
+echo "Realtime.Password: ios6pass" >> /tmp/wuser.n
+echo "Realtime.Nickname: ios6user" >> /tmp/wuser.n
+echo "Welcome Wizard.First time: iphone_no" >> /tmp/wuser.n
+echo "Welcome Wizard.Terms of Use accepted: yes" >> /tmp/wuser.n
+cp /tmp/wuser.n "$USERF"
+
+CACHE_MAPS="$CONTAINER/Library/Caches/maps"
+mkdir -p "$CACHE_MAPS"
+for root in "$CONTAINER/Documents/maps" "$CONTAINER/Library/maps" "$CACHE_MAPS" "$BUNDLE_MAPS"; do
+  [ -d "$root/77001" ] && rm -rf "$root/77001"
+done
+rm -rf "$CACHE_MAPS/queue" "$CACHE_MAPS/77001"
+rm -f "$CACHE_MAPS/tiles_77001.db" "$CACHE_MAPS/city_index"
+
+cp "$RES/77001_index.wdf" "$CACHE_MAPS/77001_index.wdf"
+cp "$RES/map77001.wzm" "$CACHE_MAPS/map77001.wzm"
+
+if [ -L "$BUNDLE_MAPS" ]; then
+  rm -f "$BUNDLE_MAPS"
+elif [ -d "$BUNDLE_MAPS" ]; then
+  rm -rf "$BUNDLE_MAPS"
+fi
+ln -sf "$CACHE_MAPS" "$BUNDLE_MAPS" 2>/dev/null || {
+  mkdir -p "$BUNDLE_MAPS"
+  cp "$CACHE_MAPS/77001_index.wdf" "$BUNDLE_MAPS/77001_index.wdf"
+  cp "$CACHE_MAPS/map77001.wzm" "$BUNDLE_MAPS/map77001.wzm"
+}
+
+if id mobile >/dev/null 2>&1; then
+  chown -R mobile:mobile "$CACHE_MAPS" "$PREF" "$USERF" 2>/dev/null || true
+  chown -h mobile:mobile "$BUNDLE_MAPS" 2>/dev/null || chown -R mobile:mobile "$BUNDLE_MAPS"
+fi
+
+rm -f "$CONTAINER"/Documents/session*
+killall -9 Waze waze 2>/dev/null || true
+echo "Waze iOS6 → serveur $SERVER — OK"

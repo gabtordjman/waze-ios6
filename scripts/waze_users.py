@@ -98,7 +98,7 @@ def _bots(lon: float, lat: float, now: float) -> list[dict]:
                 "mood": 1 + (i % 6),
                 "stars": 2 + (i % 3),
                 "rank": 8 + i * 3,
-                "points": 40 + i * 25,
+                "points": 0,
                 "title": "Wazer",
             }
         )
@@ -117,7 +117,7 @@ def add_user_line(u: dict) -> str:
         f"{lon_u},{lat_u},{az},{spd10},{now},"
         f"{int(u.get('mood') or 1)},{_ascii(u.get('title') or 'Wazer')},"
         f"0,{int(u.get('stars') or 3)},{int(u.get('rank') or 12)},"
-        f"{int(u.get('points') or 40)},{join},"
+        f"{int(u.get('points') or 0)},{join},"
         f"0,,F,,F,,0,0"
     )
 
@@ -151,50 +151,178 @@ def user_poll_lines(peer: str = "") -> list[str]:
     return rows[:40]
 
 
-def scoreboard_rows(my_points: int, my_name: str = "ios6user") -> list[tuple[int, str, int]]:
-    now = time.time()
-    board = [(1, my_name, int(my_points))]
+def scoreboard_rows(my_points: int, my_name: str = "ios6user") -> list[tuple[int, str, int, int]]:
+    """(rank, name, points, rank_diff) — tout le monde à 0 pt au départ."""
+    board: list[tuple[str, int, int]] = [(my_name, int(my_points), 0)]
     for i, (uid, name) in enumerate(zip(BOT_IDS, BOT_NAMES)):
-        board.append((8 + i * 3, name, 40 + i * 25 + int(now // 3600) % 7))
-    board.sort(key=lambda r: -r[2])
-    out = []
-    for i, (_, name, pts) in enumerate(board, start=1):
-        out.append((i, name, pts))
+        _ = uid
+        board.append((name, 0, 0))
+    board.sort(key=lambda r: (-r[1], r[0].lower()))
+    out: list[tuple[int, str, int, int]] = []
+    for i, (name, pts, diff) in enumerate(board, start=1):
+        out.append((i, name, pts, diff))
     return out
 
 
-def scoreboard_html(my_points: int, my_name: str = "ios6user", lang: str = "fra") -> bytes:
+def _scoreboard_labels(lang: str, period: str, geography: str) -> dict[str, str]:
     fr = lang != "eng"
-    title = "Classement" if fr else "Scoreboard"
-    pts_lbl = "points" if fr else "points"
-    you = "Vous" if fr else "You"
+    weekly = period != "all"
+    local = geography not in ("global", "world")
+    if fr:
+        return {
+            "title": "Classement",
+            "weekly": "Semaine",
+            "all": "Total",
+            "country": "Pays",
+            "global": "Monde",
+            "everyone": "Tous",
+            "wazer": "Wazer",
+            "points": "pts",
+            "you": "Vous",
+            "show_me": "Me localiser",
+            "left": "Suisse" if local else "Monde",
+            "right": "Cette semaine" if weekly else "Tous les temps",
+            "col_rank": "#",
+            "col_name": "Wazer",
+            "col_pts": "Points",
+        }
+    return {
+        "title": "Scoreboard",
+        "weekly": "Weekly",
+        "all": "All time",
+        "country": "Country",
+        "global": "Global",
+        "everyone": "Everyone",
+        "wazer": "Wazer",
+        "points": "pts",
+        "you": "You",
+        "show_me": "Show me",
+        "left": "Country" if local else "Global",
+        "right": "This week" if weekly else "All time",
+        "col_rank": "#",
+        "col_name": "Wazer",
+        "col_pts": "Points",
+    }
+
+
+def scoreboard_html(
+    my_points: int,
+    my_name: str = "ios6user",
+    lang: str = "fra",
+    *,
+    period: str = "weekly",
+    geography: str = "country",
+    width: int = 320,
+    height: int = 400,
+) -> bytes:
+    lbl = _scoreboard_labels(lang, period, geography)
     rows = scoreboard_rows(my_points, my_name)
+    my_row = next((r for r in rows if r[1] == my_name), (1, my_name, my_points, 0))
+    my_rank, _, my_pts, my_diff = my_row
+
     body_rows = []
-    for rank, name, pts in rows:
-        mine = " style='background:#E8D5FF'" if name == my_name else ""
-        label = f"{name} ({you})" if name == my_name else name
+    for rank, name, pts, diff in rows:
+        mine = name == my_name
+        diff_html = ""
+        if diff > 0:
+            diff_html = f'<span class="up">+{diff}</span>'
+        elif diff < 0:
+            diff_html = f'<span class="down">{diff}</span>'
+        cls = "row me" if mine else "row"
+        label = f"{name} ({lbl['you']})" if mine else name
         body_rows.append(
-            f"<tr{mine}><td>{rank}</td><td>{label}</td><td>{pts}</td></tr>"
+            f'<tr class="{cls}">'
+            f'<td class="rk">{rank}</td>'
+            f'<td class="nm">{label}<span class="attr">{lbl["wazer"]}</span></td>'
+            f'<td class="pt">{pts}</td>'
+            f'<td class="df">{diff_html}</td>'
+            f"</tr>"
         )
+
+    p_weekly = "active" if period != "all" else ""
+    p_all = "active" if period == "all" else ""
+    g_country = "active" if geography not in ("global", "world") else ""
+    g_global = "active" if geography in ("global", "world") else ""
+
+    my_diff_html = ""
+    if my_diff > 0:
+        my_diff_html = f'<span class="up">+{my_diff}</span>'
+    elif my_diff < 0:
+        my_diff_html = f'<span class="down">{my_diff}</span>'
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
+<meta name="viewport" content="width={width}, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>{lbl['title']}</title>
 <style>
-body {{ margin:0; background:#C5D0D4; color:#222; font:16px Helvetica,Arial,sans-serif; }}
-h1 {{ margin:0; padding:14px 12px; background:#6B2FA0; color:#fff; font-size:18px; }}
-table {{ width:100%; border-collapse:collapse; background:#fff; }}
-th,td {{ padding:10px 12px; text-align:left; border-bottom:1px solid #ddd; }}
-th {{ background:#E6D09A; }}
-.sub {{ padding:10px 12px; color:#444; font-size:13px; }}
+* {{ box-sizing:border-box; }}
+html,body {{ margin:0; padding:0; height:100%; background:#C5D0D4; color:#222;
+  font:14px Helvetica,Arial,sans-serif; }}
+.wrap {{ min-height:100%; display:flex; flex-direction:column; max-width:{width}px; margin:0 auto; }}
+.hdr {{ background:#6B2FA0; color:#fff; padding:10px 12px 8px; }}
+.hdr h1 {{ margin:0; font-size:17px; font-weight:bold; }}
+.subhdr {{ display:flex; justify-content:space-between; padding:6px 12px 8px;
+  background:#E6D09A; color:#333; font-size:13px; font-weight:bold; border-bottom:1px solid #c8b070; }}
+.tabs {{ display:flex; background:#ddd; border-bottom:1px solid #aaa; }}
+.tabs a {{ flex:1; text-align:center; padding:8px 4px; text-decoration:none; color:#444;
+  font-size:13px; font-weight:bold; border-right:1px solid #bbb; }}
+.tabs a:last-child {{ border-right:0; }}
+.tabs a.active {{ background:#fff; color:#337593; }}
+.list {{ flex:1; overflow:auto; background:#fff; }}
+table {{ width:100%; border-collapse:collapse; }}
+tr.row td {{ padding:8px 6px; border-bottom:1px solid #e4e4e4; vertical-align:middle; }}
+tr.row.me {{ background:#dceef5; }}
+td.rk {{ width:28px; text-align:center; color:#666; font-weight:bold; }}
+td.nm {{ font-weight:bold; color:#337593; }}
+td.nm .attr {{ display:block; font-weight:normal; font-size:11px; color:#888; margin-top:2px; }}
+td.pt {{ width:52px; text-align:right; font-weight:bold; }}
+td.df {{ width:36px; text-align:center; font-size:12px; font-weight:bold; }}
+.up {{ color:#2a8f2a; }}
+.down {{ color:#c0392b; }}
+.mebar {{ background:#f0f4f5; border-top:2px solid #6B2FA0; padding:8px 10px;
+  display:flex; align-items:center; gap:6px; }}
+.mebar .you {{ flex:1; font-weight:bold; color:#337593; font-size:14px; }}
+.mebar .rk {{ color:#666; font-size:12px; }}
+.mebar .pt {{ font-weight:bold; font-size:14px; min-width:48px; text-align:right; }}
+.mebar .df {{ min-width:32px; text-align:center; }}
+.mebtn {{ display:block; margin:6px 10px 10px; padding:8px; text-align:center;
+  background:#337593; color:#fff; text-decoration:none; border-radius:6px;
+  font-weight:bold; font-size:14px; }}
 </style></head>
 <body>
-<h1>{title}</h1>
-<div class="sub">{you}: {int(my_points)} {pts_lbl}</div>
-<table>
-<tr><th>#</th><th>Wazer</th><th>{pts_lbl}</th></tr>
-{''.join(body_rows)}
-</table>
+<div class="wrap">
+  <div class="hdr"><h1>{lbl['title']}</h1></div>
+  <div class="subhdr">
+    <span>{lbl['left']}</span>
+    <span>{lbl['right']}</span>
+  </div>
+  <div class="tabs period">
+    <a class="{p_weekly}" href="?period=weekly&geography={geography}&lang={lang}">{lbl['weekly']}</a>
+    <a class="{p_all}" href="?period=all&geography={geography}&lang={lang}">{lbl['all']}</a>
+  </div>
+  <div class="tabs geo">
+    <a class="{g_country}" href="?period={period}&geography=country&lang={lang}">{lbl['country']}</a>
+    <a class="{g_global}" href="?period={period}&geography=global&lang={lang}">{lbl['global']}</a>
+  </div>
+  <div class="list">
+    <table>
+      <tr style="background:#f5f5f5;font-size:12px;color:#666;">
+        <th class="rk">{lbl['col_rank']}</th>
+        <th>{lbl['col_name']}</th>
+        <th class="pt">{lbl['col_pts']}</th>
+        <th class="df"></th>
+      </tr>
+      {''.join(body_rows)}
+    </table>
+  </div>
+  <div class="mebar">
+    <div class="you">{lbl['you']} <span class="rk">#{my_rank}</span></div>
+    <div class="pt">{my_pts} {lbl['points']}</div>
+    <div class="df">{my_diff_html}</div>
+  </div>
+  <a class="mebtn" href="#rank{my_rank}">{lbl['show_me']}</a>
+</div>
 </body></html>
 """
     return html.encode("utf-8")
+

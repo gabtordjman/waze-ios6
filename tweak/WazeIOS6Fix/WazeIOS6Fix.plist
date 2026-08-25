@@ -1,0 +1,7 @@
+{ Filter = { Bundles = (
+  "com.waze.iphone",
+  "com.waze.app",
+  "com.waze",
+  "com.google.waze",
+  "com.google.Waze"
+); }; }

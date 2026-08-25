@@ -4,7 +4,7 @@ CONF="$ROOT/scripts/dnsmasq-waze.conf"
 PIDFILE="$ROOT/logs/dnsmasq-waze.pid"
 LOG="$ROOT/logs/dnsmasq-waze.log"
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-IP="${IP:-192.168.1.191}"
+IP="${IP:-$(python3 -c 'import sys; sys.path.insert(0,"scripts"); from waze_env import server_ip; print(server_ip())' 2>/dev/null || echo 192.168.1.191)}"
 mkdir -p "$ROOT/logs"
 
 cat > "$CONF" <<EOF

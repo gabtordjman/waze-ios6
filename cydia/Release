@@ -1,0 +1,12 @@
+Origin: waze-ios6
+Label: waze-ios6
+Suite: stable
+Version: 1.0
+Codename: ios6
+Architectures: iphoneos-arm
+Components: main
+Description: Waze 2.4 community server
+Date: Tue, 25 Aug 2026 23:37:55 +0000
+SHA1:
+ 38050d392c76ff5fbe66dc364fb891eed8d5094f 541 Packages
+ bf4b319f625500d1ef3195eb498c5a2d4eebbadd 402 Packages.bz2

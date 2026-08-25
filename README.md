@@ -1,146 +1,168 @@
-# Waze iOS 6 — serveurs et cartes reconstruits
+# Waze iOS 6 — serveur VPS
 
-Les serveurs Waze d’origine sont éteints. Ici un PC Linux sur le réseau local
-répond à leur place, et les cartes sont fabriquées depuis OpenStreetMap.
+Branche dédiée au déploiement public. Les serveurs Waze d’origine sont éteints :
+ce dépôt fait tourner un mock RTS pour **Waze 2.4.0.0** (iPhone jailbreaké),
+avec cartes OSM générées autour du GPS de chaque utilisateur.
 
-Cible : **Waze 2.4.0.0** (dernière version iPhone / Android encore GPL).
-La source est sur [github.com/mkoloberdin/waze](https://github.com/mkoloberdin/waze),
-branche `iphone`. Rien n’est deviné : login, tuiles, overlay, reports, wazers,
-c’est lu dans `Realtime/` et `roadmap_*.c`.
-
-Waze 3.9.6 peut encore se connecter (protocole 202, format de login balayé).
-Ce n’est plus le chemin principal.
+Cible client : tweak Cydia (voir [`cydia/`](cydia/)) qui redirige Waze vers
+l’IP publique de ce serveur.
 
 ---
 
-## Ce qui marche aujourd’hui
+## Contenu de cette branche
 
-- Login protocole 150 du premier coup (`LoginSuccessful`, 11 champs).
-- Carte locale `.wzm` (look Waze : fond gris-bleu, rues grises, axes beige).
-- Itinéraire OSRM + overlay violet collé aux segments `.wzm` (zoom rue).
-- Guidage vocal français (`Prompts.Name=fra`). Pack anglais à part (`eng/`).
-- Interface française (`lang.fra`). L’anglais a son propre `lang.eng`.
-- Reports conservés ~30 minutes, renvoyés à chaque `At` / `SeeMe`.
-- Points (ticker + total au login) et classement (menu Scoreboard).
-- Wazers autour de la position (voisins réels s’il y en a, plus quelques
-  silhouettes pour que la carte ne soit pas vide).
-
-Le GPS public / VPS / DNS pour tout le monde n’est **pas** dans ce dépôt pour
-l’instant : ça reste du LAN (`192.168.1.191`).
-
-La révision du catcher s’affiche au lancement : `CATCHER_REV=proto150-route-20260826h`.
-Si le log montre une ancienne rev, le T480 n’a pas le code.
+| Chemin | Rôle |
+|--------|------|
+| `go-vps.sh` | démarre le catcher (mode VPS) |
+| `stop.sh` | arrête le catcher |
+| `.env.example` | modèle de config (à copier en `.env`) |
+| `.env` | **local uniquement** — ignoré par git |
+| `scripts/` | catcher, cartes OSM, tuiles, routing, alerts |
+| `mitm/fake-resources/` | langs, config, images, sons servis en HTTP |
+| `mitm/certs/tls/` | certificat HTTPS (SAN = IP, optionnel) |
+| `maps/` | cartes générées au runtime (vide au clone) |
+| `logs/` | logs catcher / état carte |
+| `deploy/` | unit systemd |
+| `tweak/` + `cydia/` | build du `.deb` Cydia (PC de build, pas le VPS) |
 
 ---
 
-## Lancer (T480)
+## Prérequis VPS
+
+- Debian / Ubuntu (Python 3.10+)
+- Ports **80/tcp** et **443/tcp** ouverts
+- IP publique fixe
+- Root (ports bas) ou adapter `CATCHER_HTTP_PORT` dans `.env`
+
+---
+
+## Installation (premier coup)
 
 ```bash
-cd /home/tordjman/Documents/Projets/waze-ios6
-sh pull.sh
-sh stop.sh
-sudo sh go.sh          # laisse tourner
+# Sur le VPS
+sudo mkdir -p /opt/waze-ios6
+sudo chown "$USER":"$USER" /opt/waze-ios6
+cd /opt/waze-ios6
+
+git clone -b vps --single-branch https://github.com/VOTRE_USER/waze-ios6.git .
+# ou, si le dépôt existe déjà :
+# git remote add origin https://github.com/VOTRE_USER/waze-ios6.git
+# git fetch origin vps
+# git checkout -B vps origin/vps
+
+cp .env.example .env
+nano .env   # WAZE_SERVER_IP=TON_IP_PUBLIQUE
 ```
 
-Autre terminal, après une nouvelle carte ou de nouvelles voix :
+Exemple `.env` :
+
+```
+WAZE_MODE=vps
+WAZE_SERVER_IP=203.0.113.50
+SKIP_DNS=1
+SKIP_DNAT=1
+SKIP_TCPDUMP=1
+CATCHER_HTTP_PORT=80
+CATCHER_HTTPS_PORT=443
+```
+
+### Lancer à la main
 
 ```bash
-sh phone.sh            # 4S @ .60
-# sh phone.sh 192.168.1.61
+sudo sh go-vps.sh
 ```
 
-**iPhone :** Wi-Fi → DNS manuel → `192.168.1.191` → ouvrir Waze.
-
-Le login 2.4 passe tout de suite. Pas besoin d’attendre un balayage de variantes
-(ça ne concerne que la 3.9.6).
-
----
-
-## Cartes
-
-Pas de carte préfaite dans git : chacun génère la sienne autour de son GPS.
+Laisser le terminal ouvert, ou passer en systemd :
 
 ```bash
-python3 scripts/wazemap.py selftest
-python3 scripts/map_auto.py build --lon 6.4847 --lat 46.3646 --force
-sh phone.sh
+sudo cp deploy/waze-catcher.service /etc/systemd/system/
+# Adapter WorkingDirectory / EnvironmentFile si le chemin n'est pas /opt/waze-ios6
+sudo systemctl daemon-reload
+sudo systemctl enable --now waze-catcher
+sudo journalctl -u waze-catcher -f
 ```
 
-Ça produit `maps/auto/map77001.wzm` + `77001_index.wdf`. Les deux vont dans
-`Waze.app/maps` (c’est le seul chemin que l’iPhone lit pour l’index).
-
-`--force` est obligatoire si on a changé les catégories de routes (sinon le
-cache OSM est réutilisé et les axes restent tous blancs).
-
-Ne pas lancer Overpass depuis `phone.sh` : un rebuild centré sur le pan de
-carte (et pas le GPS) a déjà produit un écran vide.
-
----
-
-## Voix et langues
-
-Les MP3 se lisent dans `Documents/sound/<Prompts.Name>/`.
+### Firewall
 
 ```bash
-python3 scripts/gen_fr_prompts.py            # fra + eng (gTTS)
-python3 scripts/gen_fr_prompts.py --langs-only   # uniquement lang.fra / lang.eng
-sh phone.sh
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw reload
 ```
 
-`phone.sh` copie **fra vers fra** et **eng vers eng**. Plus de français collé
-par-dessus l’anglais (ça donnait « En route » dans les deux langues, ou le
-silence si le fichier anglais était un faux MP3 de 1 Ko).
+### TLS (optionnel)
 
-Dans Waze : Réglages → langue / voix. Français = `fra`. English = `eng`.
+Le client Waze 2.4 utilise surtout **HTTP** vers l’IP. Si besoin d’HTTPS :
 
----
-
-## Reports, points, wazers, classement
-
-Les signalements restent ~30 minutes (`logs/alerts.json` survit à un restart
-du catcher). Chaque report ajoute 6 points (`UpdateUserPoints`) ; le total
-repart au prochain login.
-
-Le menu Classement ouvre le navigateur intégré sur `http://www.waze.com`
-(c’est en dur dans `roadmap_scoreboard.m`). `phone.sh` ajoute `www.waze.com`
-dans `/etc/hosts` vers le PC, et le catcher sert une petite page HTML.
-
-Les autres téléphones connectés au même catcher apparaissent comme wazers.
-Tout seul, quelques voisins simulés tournent autour du GPS.
+```bash
+# .env déjà chargé avec WAZE_SERVER_IP
+sh scripts/regen-tls-san.sh
+sudo systemctl restart waze-catcher
+```
 
 ---
 
-## Fichiers utiles
+## Mise à jour
 
-| Fichier | Rôle |
-|---------|------|
-| `go.sh` | lance le catcher (ports 80 / 443) |
-| `stop.sh` | l’arrête |
-| `phone.sh` | prefs, hosts, carte, voix sur le téléphone |
-| `pull.sh` | GitHub → T480 |
-| `scripts/rts_catcher_min.py` | mock RTS |
-| `scripts/waze_route.py` | overlay + manœuvres |
-| `scripts/waze_alerts.py` | reports / points |
-| `scripts/waze_users.py` | wazers + HTML classement |
-| `scripts/map_auto.py` | carte OSM autour du GPS |
-| `docs/PROGRESS.md` | notes plus techniques |
+```bash
+cd /opt/waze-ios6
+git pull origin vps
+sudo systemctl restart waze-catcher   # ou : sudo sh stop.sh && sudo sh go-vps.sh
+```
 
-Tests sans téléphone : `python3 scripts/test_catcher_offline.py`.
+Le fichier `.env` n’est **pas** écrasé par `git pull` (il est dans `.gitignore`).
 
 ---
 
-## Matériel (labo actuel)
+## Comportement runtime
 
-| Rôle | IP |
-|------|-----|
-| PC (T480) | 192.168.1.191 |
-| iPhone 4S | 192.168.1.60 |
+1. iPhone (tweak Cydia) → HTTP `http://WAZE_SERVER_IP/rtserver`
+2. Login protocole 150 + GetGeo → config `Download.*`, tuiles, scoreboard
+3. Premier GPS (`At` / `Location`) → build carte OSM dans `maps/auto/` (~30–90 s)
+4. Expansion Overpass si pan / destination hors bbox (file d’attente : 1 job à la fois)
+5. Tuiles : `GET /tiles/…` depuis le `.wzm` (+ stubs hors zone)
+6. Signalements, wazers, classement HTML
+
+Compte client par défaut (tweak) : `ios6user` / `ios6pass`.
 
 ---
 
-## 3.9.6
+## Tweak Cydia (sur un PC de build, pas le VPS)
 
-Protocole 202, login non documenté : le catcher balaie des formats et mémorise
-celui qui passe dans `logs/login-variant.txt`. `sh diag.sh` lit les messages
-d’erreur dans le binaire. La carte `.wzm` a de bonnes chances de marcher aussi,
-ce n’est pas le focus.
+```bash
+sh tweak/build-deb.sh TON_IP_PUBLIQUE 1.0.0
+sh cydia/make-repo.sh
+git add cydia/ && git commit -m "cydia: release 1.0.0" && git push origin vps
+```
+
+Sur l’iPhone : Cydia → Sources →
+
+```
+https://raw.githubusercontent.com/VOTRE_USER/waze-ios6/vps/cydia
+```
+
+Installer **Waze iOS6 Server**, ouvrir Waze 2.4.
+
+Détails : [`cydia/README.md`](cydia/README.md).
+
+---
+
+## Sécurité (repo public)
+
+- Serveur mock **ouvert** : pas d’auth forte, compte partagé
+- Ne pas committer `.env`, clés privées hors `mitm/certs` de lab, ni dumps perso
+- Overpass : un build à la fois (rate-limit interne)
+- Surveiller disque (`maps/`, `logs/`)
+
+---
+
+## Dépannage
+
+| Symptôme | Piste |
+|----------|--------|
+| Port 80 occupé | `ss -ltnp sport = :80` — arrêter nginx ou changer `CATCHER_HTTP_PORT` |
+| Login refuse | vérifier `WAZE_SERVER_IP` = IP vue par l’iPhone ; `journalctl -u waze-catcher` |
+| Carte vide | attendre GPS + Overpass ; logs `maps/auto/` ; `★ tuile` dans les logs |
+| Pas de GET `/tiles/` | prefs iPhone : `Download.Tiles` / tweak pas à jour |
+
+Tests sans réseau : `python3 scripts/test_catcher_offline.py`.

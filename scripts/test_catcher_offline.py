@@ -274,9 +274,8 @@ def test_alerts() -> None:
     assert abs(parsed["lon"] - 6.48470) < 1e-4
     rows = report_alert_response(parsed)
     assert rows[0] == "RC,200,OK"
-    assert rows[1].startswith("ReportAlertRes,6,")
-    assert "Merci" in rows[1]
-    assert any(r.startswith("UpdateUserPoints,6") for r in rows)
+    assert rows[1] == "ReportAlertRes,6,,"
+    assert not any(r.startswith("UpdateUserPoints") for r in rows)
     assert rows[-1].startswith("AddAlert,")
     line = add_alert_line(
         {

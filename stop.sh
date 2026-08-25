@@ -22,4 +22,4 @@ if command -v ss >/dev/null 2>&1; then
   fi
 fi
 
-echo "OK — relance: sudo sh go.sh"
+echo "OK — relance: sudo sh go-vps.sh   (ou sudo sh go.sh en lab)"

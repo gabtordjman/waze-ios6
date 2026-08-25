@@ -4,7 +4,8 @@
 Client : At + ReportAlert (RealtimeNet.c RTNet_ReportAlertAtPosition).
 Carte  : AddAlert (RealtimeNetRec.c AddAlert) — coords en micro-degrés.
 Ack    : ReportAlertRes,<points>,<title>,<msg>
-Points : UpdateUserPoints,<delta> (RealtimeNetRec.c).
+         msg vide → pas de popup ; points > 0 → ticker en haut (report_event).
+Points : comptés dans ReportAlertRes (pas de UpdateUserPoints en double).
 Durée  : ~30 min, puis RmAlert. Fichier logs/alerts.json pour survivre
 à un relance du catcher.
 """
@@ -21,7 +22,7 @@ STORE_FILE = ROOT / "logs" / "alerts.json"
 POINTS_FILE = ROOT / "logs" / "points.json"
 ALERT_TTL = 1800
 REPORT_POINTS = 6
-START_POINTS = 100
+START_POINTS = 0
 
 _lock = Lock()
 _next_id = 1001
@@ -245,14 +246,14 @@ def all_add_alert_lines() -> list[str]:
 def report_alert_response(parsed: dict, lang: str = "fra") -> list[str]:
     rec = store_report(parsed)
     add_points(REPORT_POINTS)
-    if lang == "eng":
-        title, msg = "Thank you", "Report received"
-    else:
-        title, msg = "Merci !", "Signalement recu"
+    # GPL ReportAlertRes : popup seulement si msg non vide ; sinon bandeau
+    # ticker en haut (+N pts, « Road report » / report_event) via iPoints > 0.
+    _ = lang
+    # Titre seul (msg vide après la virgule finale) : pas de popup,
+    # iPoints>0 declenche le ticker bandeau (report_event).
     return [
         "RC,200,OK",
-        f"ReportAlertRes,{REPORT_POINTS},{title},{msg}",
-        f"UpdateUserPoints,{REPORT_POINTS}",
+        f"ReportAlertRes,{REPORT_POINTS},,",
         add_alert_line(rec),
     ]
 

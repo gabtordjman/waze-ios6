@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Waze iOS6 — lance le catcher RTS mock."""
+"""Waze iOS6 — lance le catcher RTS mock (lab LAN ou VPS public)."""
 from __future__ import annotations
 
 import atexit
@@ -13,6 +13,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+sys.path.insert(0, str(HERE))
+
+from waze_env import apply_to_environ, is_vps, mode, server_ip  # noqa: E402
+
 CATCHER = HERE / "rts_catcher_min.py"
 DEAD_IP = "75.101.158.200"
 DNS_SCRIPT = HERE / "run-dns-sinkhole.sh"
@@ -20,8 +24,8 @@ DNS_SCRIPT = HERE / "run-dns-sinkhole.sh"
 if not CATCHER.is_file():
     sys.exit(f"ERREUR: {CATCHER} introuvable")
 
-# Une seule source de vérité : on lit la révision dans le catcher plutôt que
-# d'en garder une copie qui finit toujours par diverger.
+apply_to_environ()
+
 CATCHER_REV = "inconnue"
 for _line in CATCHER.read_text(encoding="utf-8").splitlines():
     if _line.startswith("CATCHER_REV = "):
@@ -36,27 +40,30 @@ os.environ.setdefault(
     "OPENSSL_CONF", str(ROOT / "mitm" / "certs" / "tls" / "openssl-ios6.cnf")
 )
 
-phones = [
-    p.strip()
-    for p in os.environ.get("PHONES", "192.168.1.60,192.168.1.61").split(",")
-    if p.strip()
-]
-phones = list(dict.fromkeys(phones))
-
-pc_ip = os.environ.get("PC_IP", "").strip()
-if not pc_ip:
-    try:
-        pc_ip = subprocess.check_output(["hostname", "-I"], text=True).split()[0]
-    except Exception:
-        pc_ip = "192.168.1.191"
+waze_mode = mode()
+pc_ip = server_ip()
 os.environ["PC_IP"] = pc_ip
+os.environ["WAZE_SERVER_IP"] = pc_ip
+
+if is_vps():
+    os.environ.setdefault("SKIP_DNS", "1")
+    os.environ.setdefault("SKIP_DNAT", "1")
+    os.environ.setdefault("SKIP_TCPDUMP", "1")
+    phones: list[str] = []
+else:
+    phones = [
+        p.strip()
+        for p in os.environ.get("PHONES", "192.168.1.60,192.168.1.61").split(",")
+        if p.strip()
+    ]
+    phones = list(dict.fromkeys(phones))
 
 http_port = int(os.environ.get("CATCHER_HTTP_PORT", "80"))
 https_port = int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
 MY_PID = os.getpid()
 
 print(f"CATCHER_REV={CATCHER_REV}  pid={MY_PID}", flush=True)
-print(f"PC={pc_ip}  phones={phones}", flush=True)
+print(f"mode={waze_mode}  server={pc_ip}  phones={phones}", flush=True)
 
 
 def _port_owner(port: int) -> str:
@@ -71,7 +78,6 @@ def _port_owner(port: int) -> str:
 
 
 def _ensure_port(port: int) -> None:
-    """Test bind only — stop.sh (avant exec) tue les anciens catchers, pas nous."""
     print(f"Port :{port}…", flush=True)
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -85,8 +91,7 @@ def _ensure_port(port: int) -> None:
             for line in owner.splitlines():
                 if "LISTEN" in line:
                     print(f"  {line}", flush=True)
-        print("  → sh stop.sh  puis  sudo sh go.sh", flush=True)
-        print("  → si nginx: sudo systemctl stop nginx", flush=True)
+        print("  → sh stop.sh  puis relancer", flush=True)
         sys.exit(1)
     finally:
         probe.close()
@@ -95,11 +100,17 @@ def _ensure_port(port: int) -> None:
 _ensure_port(http_port)
 _ensure_port(https_port)
 
-if DNS_SCRIPT.is_file() and os.environ.get("SKIP_DNS") != "1":
+if (
+    not is_vps()
+    and DNS_SCRIPT.is_file()
+    and os.environ.get("SKIP_DNS") != "1"
+):
     raw = DNS_SCRIPT.read_bytes()
     if b"\r" in raw:
         DNS_SCRIPT.write_bytes(raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
     subprocess.run(["sh", str(DNS_SCRIPT)], check=False, cwd=str(ROOT))
+elif is_vps():
+    print("dnsmasq skip (mode VPS)", flush=True)
 
 dnat_ok = False
 
@@ -118,6 +129,8 @@ def _iptables(args: list[str]) -> bool:
 
 def _setup_dnat() -> None:
     global dnat_ok
+    if is_vps() or os.environ.get("SKIP_DNAT") == "1" or not phones:
+        return
     try:
         Path("/proc/sys/net/ipv4/ip_forward").write_text("1")
     except Exception:
@@ -177,7 +190,8 @@ def _clear_dnat() -> None:
             )
 
 
-_setup_dnat()
+if not is_vps() and os.environ.get("SKIP_DNAT") != "1":
+    _setup_dnat()
 atexit.register(_clear_dnat)
 
 pcap = ROOT / "logs" / "ultimate-latest.pcap"
@@ -203,23 +217,26 @@ def _on_exit(*_a) -> None:
 signal.signal(signal.SIGINT, _on_exit)
 signal.signal(signal.SIGTERM, _on_exit)
 
-try:
-    (ROOT / "logs").mkdir(parents=True, exist_ok=True)
-    iface = os.environ.get("IFACE", "wlp3s0")
-    if pcap.is_file():
-        pcap.unlink()
-    filt = " or ".join(f"host {p}" for p in phones)
-    tcpdump_proc = subprocess.Popen(
-        [
-            "tcpdump", "-i", iface, "-s", "0", "-U", "-w", str(pcap),
-            f"({filt}) or host {DEAD_IP}",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    print(f"tcpdump → {pcap}", flush=True)
-except Exception as exc:
-    print(f"tcpdump skip: {exc}", flush=True)
+if os.environ.get("SKIP_TCPDUMP") != "1" and phones:
+    try:
+        (ROOT / "logs").mkdir(parents=True, exist_ok=True)
+        iface = os.environ.get("IFACE", "wlp3s0")
+        if pcap.is_file():
+            pcap.unlink()
+        filt = " or ".join(f"host {p}" for p in phones)
+        tcpdump_proc = subprocess.Popen(
+            [
+                "tcpdump", "-i", iface, "-s", "0", "-U", "-w", str(pcap),
+                f"({filt}) or host {DEAD_IP}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"tcpdump → {pcap}", flush=True)
+    except Exception as exc:
+        print(f"tcpdump skip: {exc}", flush=True)
+elif is_vps():
+    print("tcpdump skip (mode VPS)", flush=True)
 
 print("Démarrage catcher…", flush=True)
 sys.argv[0] = str(CATCHER)
