@@ -65,6 +65,202 @@ def test_fill_gaps() -> None:
     assert [r[1] for r in out] == [0, 1, 2], [r[1] for r in out]
 
 
+def test_fill_along_same_tiles() -> None:
+    from waze_route import _fill_along_route
+
+    a = (1, 0, 1, 0, 0, 10, 400, 0, 0, 0, 0, 1)
+    mid = (1, 1, 1, 2_000, 0, 10, 3_600, 0, 400, 0, 1, 2)
+    b = (1, 2, 1, 5_000, 0, 10, 6_000, 0, 3_600, 0, 2, 3)
+    other_tile = (9, 9, 1, 2_000, 0, 10, 3_600, 0, 400, 0, 1, 2)
+    pts = [(x, 0) for x in range(0, 6_001, 400)]
+    out = _fill_along_route([a, b], [a, mid, b, other_tile], pts)
+    assert [r[1] for r in out] == [0, 1, 2], [r[1] for r in out]
+    assert all(r[0] == 1 for r in out)
+
+
+def test_fill_inserts_close_gap() -> None:
+    """Bouts à < 50 m sans nœud commun : il manque le morceau du milieu."""
+    from waze_route import _fill_along_route
+
+    a = _line(1, 0, 0, 0, 3_000, 0, 0, 1)
+    mid = _line(1, 1, 3_000, 0, 3_400, 0, 1, 2)
+    b = _line(1, 2, 3_400, 0, 8_000, 0, 2, 3)
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    out = _fill_along_route([a, b], [a, mid, b], pts)
+    assert [r[1] for r in out] == [0, 1, 2], [r[1] for r in out]
+
+
+def _run_match(index, pts, length=1_200, duration=120):
+    import waze_route as wr
+
+    old_idx = wr._load_line_index
+    old_names = wr._load_osm_names
+    wr._load_line_index = lambda **_k: index
+    wr._load_osm_names = lambda: {}
+    try:
+        return wr._match_segments(pts, length, duration)
+    finally:
+        wr._load_line_index = old_idx
+        wr._load_osm_names = old_names
+
+
+def _line(tid, li, x1, y1, x2, y2, n1, n2):
+    return (
+        tid,
+        li,
+        1,
+        (x1 + x2) // 2,
+        (y1 + y2) // 2,
+        max(abs(x2 - x1) + abs(y2 - y1), 1) // 10,
+        x2,
+        y2,
+        x1,
+        y1,
+        n1,
+        n2,
+    )
+
+
+def test_match_records_turn() -> None:
+    """Sans skip collant : les 3 rues d'un L sont toutes sur le tracé."""
+    a = _line(1, 0, 0, 0, 4_000, 0, 0, 1)
+    b = _line(1, 1, 4_000, 0, 4_000, 4_000, 1, 2)
+    c = _line(1, 2, 4_000, 4_000, 0, 4_000, 2, 3)
+    pts = (
+        [(x, 0) for x in range(0, 4_001, 400)]
+        + [(4_000, y) for y in range(400, 4_001, 400)]
+        + [(x, 4_000) for x in range(3_600, -1, -400)]
+    )
+    ids = [s["line"] for s in _run_match([a, b, c], pts)]
+    assert ids == [0, 1, 2], ids
+
+
+def test_match_stays_on_main() -> None:
+    """Tout droit : ni ruelle perpendiculaire ni parallèle à 80 m."""
+    main = _line(1, 0, 0, 0, 8_000, 0, 0, 1)
+    side = _line(1, 1, 4_000, 0, 4_000, 4_000, 1, 2)
+    para = _line(1, 2, 0, 700, 8_000, 700, 3, 4)
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    ids = [s["line"] for s in _run_match([main, side, para], pts, 800, 80)]
+    assert ids == [0], ids
+
+
+def test_match_ignores_spur_when_osrm_cuts_corner() -> None:
+    """OSRM coupe le carrefour (~45°) : la ruelle touche le trajet (dist 0)
+    et passe HEADING_MAX, mais son autre bout n'est pas sur l'itinéraire."""
+    chunks = [
+        _line(1, i, x, 0, x + 1_000, 0, i, i + 1)
+        for i, x in enumerate(range(0, 8_000, 1_000))
+    ]
+    spurs = [
+        _line(1, 100 + i, x, 0, x, 2_500, i, 50 + i)
+        for i, x in enumerate(range(1_000, 8_000, 1_000))
+    ]
+    pts = []
+    for x in range(0, 8_001, 200):
+        y = 180 if x % 1_000 == 0 and 0 < x < 8_000 else 0
+        pts.append((x, y))
+    ids = [s["line"] for s in _run_match(chunks + spurs, pts, 800, 80)]
+    assert ids == [0, 1, 2, 3, 4, 5, 6, 7], ids
+
+
+def test_match_ignores_diagonal_fork() -> None:
+    """Fourche à 11° : même cap, un bout sur l'OSRM, l'autre s'éloigne."""
+    main = [
+        _line(1, 0, 0, 0, 4_000, 0, 0, 1),
+        _line(1, 1, 4_000, 0, 8_000, 0, 1, 2),
+    ]
+    fork = _line(1, 9, 4_000, 0, 8_000, 800, 1, 3)
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    ids = [s["line"] for s in _run_match(main + [fork], pts, 800, 80)]
+    assert ids == [0, 1], ids
+
+
+def test_match_does_not_detour_on_parallel() -> None:
+    """Trou sur la rue principale : ne pas glisser sur la parallèle à 45 m
+    (join flou + left_prev + fill)."""
+    south = [
+        _line(1, 0, 0, 0, 3_000, 0, 0, 1),
+        _line(1, 1, 5_000, 0, 8_000, 0, 2, 3),
+    ]
+    north = [
+        _line(1, 9, 0, 400, 4_000, 400, 10, 11),
+        _line(1, 10, 4_000, 400, 8_000, 400, 11, 12),
+    ]
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    ids = [s["line"] for s in _run_match(south + north, pts, 800, 80)]
+    assert 9 not in ids and 10 not in ids, ids
+    assert ids[0] == 0 and ids[-1] == 1, ids
+
+
+def test_long_line_matches_at_start() -> None:
+    """Le milieu d'une longue rue ne doit pas la faire rater au départ."""
+    import waze_route as wr
+
+    long = (1, 0, 1, 10_000, 0, 200, 20_000, 0, 0, 0, 0, 1)
+    alley = (1, 1, 1, 200, 500, 10, 400, 500, 0, 500, 2, 3)
+    index = [long, alley]
+    pts = [(x, 0) for x in range(0, 2_001, 200)]
+    old_idx = wr._load_line_index
+    old_names = wr._load_osm_names
+    wr._load_osm_names = lambda: {}
+    wr._load_line_index = lambda **_k: index
+    try:
+        segs = wr._match_segments(pts, 200, 20)
+    finally:
+        wr._load_line_index = old_idx
+        wr._load_osm_names = old_names
+    ids = [s["line"] for s in segs]
+    assert ids == [0], ids
+
+
+def test_pin_reaches_driveway() -> None:
+    """Le bout hors couloir (allée / maison) doit quand même être sur le tracé."""
+    mains = [
+        _line(1, 0, 0, 0, 4_000, 0, 0, 1),
+        _line(1, 1, 4_000, 0, 8_000, 0, 1, 2),
+    ]
+    drive = _line(1, 9, 8_000, 0, 8_200, 800, 2, 3)
+    pts = [(x, 0) for x in range(0, 8_001, 400)]
+    pts.append((8_100, 400))
+    ids = [s["line"] for s in _run_match(mains + [drive], pts, 900, 90)]
+    assert ids[-1] == 9, ids
+
+
+def test_pin_reaches_driveway_without_shared_node() -> None:
+    """Allée qui touche la rue sans le même nœud .wzm (trou à la maison)."""
+    mains = [
+        _line(1, 0, 0, 0, 4_000, 0, 0, 1),
+        _line(1, 1, 4_000, 0, 8_000, 0, 1, 2),
+    ]
+    drive = _line(1, 9, 8_000, 0, 8_200, 800, 99, 100)
+    pts = [(x, 0) for x in range(0, 8_001, 400)]
+    pts.append((8_100, 400))
+    ids = [s["line"] for s in _run_match(mains + [drive], pts, 900, 90)]
+    assert ids[-1] == 9, ids
+
+
+def test_pin_reaches_house_at_start() -> None:
+    """Le GPS est dans l'allée au départ : l'overlay doit commencer là."""
+    mains = [
+        _line(1, 0, 0, 0, 4_000, 0, 0, 1),
+        _line(1, 1, 4_000, 0, 8_000, 0, 1, 2),
+    ]
+    drive = _line(1, 9, 0, 800, 0, 0, 99, 100)
+    pts = [(0, 400), (0, 0)] + [(x, 0) for x in range(400, 8_001, 400)]
+    ids = [s["line"] for s in _run_match(mains + [drive], pts, 900, 90)]
+    assert ids[0] == 9, ids
+
+
+def test_resample_caps_points() -> None:
+    from waze_route import _resample_pts
+
+    pts = [(i, 0) for i in range(500)]
+    out = _resample_pts(pts, 80)
+    assert 2 <= len(out) <= 80
+    assert out[0] == pts[0] and out[-1] == pts[-1]
+
+
 def test_alerts() -> None:
     reset_store()
     body = (
@@ -119,6 +315,16 @@ def test_search_city() -> None:
     assert "," not in city + street
 
 
+def test_geo_french_and_thin_streets() -> None:
+    import rts_catcher_min as rc
+
+    text = rc.BODY_GEO.decode("ascii")
+    assert "GeoServerConfig,1,world,fra," in text, text[:200]
+    assert ",Prompts,Name,fra" in text
+    assert ",Streets,Thickness,1" in text
+    assert ",System,Language,fra" in text
+
+
 def test_prompts() -> None:
     conf = (
         ROOT
@@ -131,7 +337,9 @@ def test_prompts() -> None:
         / "prompts.conf"
     )
     assert conf.is_file(), conf
-    assert "eng,English" in conf.read_text(encoding="ascii")
+    ptext = conf.read_text(encoding="utf-8")
+    assert "eng,English" in ptext
+    assert "fra,French" in ptext or "fra,Français" in ptext
     click = (
         ROOT
         / "mitm"
@@ -143,6 +351,31 @@ def test_prompts() -> None:
         / "click.mp3"
     )
     assert click.is_file() and click.stat().st_size > 0, click
+    lang_conf = (
+        ROOT
+        / "mitm"
+        / "fake-resources"
+        / "resources"
+        / "config"
+        / "1.0"
+        / "1"
+        / "lang.conf"
+    )
+    langs = lang_conf.read_text(encoding="utf-8")
+    assert "fra," in langs, langs
+    fra = ROOT / "mitm" / "fake-resources" / "resources" / "langs" / "lang.fra"
+    assert fra.is_file() and "Route found=" in fra.read_text(encoding="utf-8")
+    voice = (
+        ROOT
+        / "mitm"
+        / "fake-resources"
+        / "resources"
+        / "sounds"
+        / "1.0"
+        / "fra"
+        / "TurnLeft.mp3"
+    )
+    assert voice.is_file() and voice.stat().st_size > 400, voice
 
 
 def test_osrm_steps_by_distance() -> None:
@@ -172,6 +405,35 @@ def test_downsample() -> None:
     assert out[-1][1] == 199
 
 
+def test_trace_joins_only_connected() -> None:
+    from waze_route import _can_join
+
+    a = (1, 0, 1, 0, 0, 10, 100, 0, 0, 0, 0, 1)
+    near = (1, 1, 1, 80, 0, 10, 180, 0, 100, 0, 1, 2)
+    far = (1, 2, 1, 40_000, 40_000, 10, 40_100, 40_000, 40_000, 40_000, 0, 1)
+    assert _can_join(a, near)
+    assert not _can_join(a, far)
+
+
+def test_from_node_on_wire() -> None:
+    from waze_route import CONTINUE, _route_segment_rows
+
+    segs = [
+        {
+            "tid": 9,
+            "line": 3,
+            "ts": 1,
+            "len": 10,
+            "time": 2,
+            "instr": CONTINUE,
+            "dest_name": "",
+            "from_node": 7,
+        }
+    ]
+    row = _route_segment_rows(1, 1, segs)[0]
+    assert ",3,7,10," in row, row
+
+
 def test_ascii_commas() -> None:
     assert "," not in _ascii("A, B")
 
@@ -185,6 +447,14 @@ def test_major_ways() -> None:
     ]
     out = major_ways(ways)
     assert len(out) == 1 and out[0][2] == "A40"
+
+
+def test_street_zoom_not_yellow() -> None:
+    from wazemap import ROAD_PRIMARY, ROAD_SECONDARY, ROAD_STREET, display_category
+
+    assert display_category(ROAD_PRIMARY, 0) == ROAD_STREET
+    assert display_category(ROAD_SECONDARY, 0) == ROAD_STREET
+    assert display_category(ROAD_PRIMARY, 2) == ROAD_PRIMARY
 
 
 def test_no_negative_line_stubs() -> None:
@@ -254,13 +524,29 @@ def main() -> int:
         test_dest_label,
         test_via_not_dest,
         test_fill_gaps,
+        test_fill_along_same_tiles,
+        test_fill_inserts_close_gap,
+        test_match_records_turn,
+        test_match_stays_on_main,
+        test_match_ignores_spur_when_osrm_cuts_corner,
+        test_match_ignores_diagonal_fork,
+        test_match_does_not_detour_on_parallel,
+        test_long_line_matches_at_start,
+        test_pin_reaches_driveway,
+        test_pin_reaches_driveway_without_shared_node,
+        test_pin_reaches_house_at_start,
+        test_resample_caps_points,
         test_osrm_steps_by_distance,
         test_downsample,
+        test_trace_joins_only_connected,
+        test_from_node_on_wire,
         test_alerts,
         test_search_city,
         test_prompts,
+        test_geo_french_and_thin_streets,
         test_ascii_commas,
         test_major_ways,
+        test_street_zoom_not_yellow,
         test_no_negative_line_stubs,
         test_inspect_selftest,
     ]

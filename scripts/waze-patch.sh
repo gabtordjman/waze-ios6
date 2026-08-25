@@ -104,6 +104,8 @@ grep -v '^Navigation.Navigation guidance enabled:' | \
 grep -v '^Navigation.Navigation guidance type:' | \
 grep -v '^Navigation.Guidance type default:' | \
 grep -v '^Prompts.Name:' | \
+grep -v '^System.Language:' | \
+grep -v '^System.Default Language:' | \
 grep -v '^Map.Static County:' | \
 grep -v '^Editor.Gray scale:' | \
 grep -v '^Display.Auto night mode:' | \
@@ -149,7 +151,9 @@ echo "Navigation.Navigation guidance on: yes" >> /tmp/wpref.n
 echo "Navigation.Navigation guidance enabled: yes" >> /tmp/wpref.n
 echo "Navigation.Navigation guidance type: Minimal" >> /tmp/wpref.n
 echo "Navigation.Guidance type default: Minimal" >> /tmp/wpref.n
-echo "Prompts.Name: eng" >> /tmp/wpref.n
+echo "Prompts.Name: fra" >> /tmp/wpref.n
+echo "System.Language: fra" >> /tmp/wpref.n
+echo "System.Default Language: fra" >> /tmp/wpref.n
 echo "Download.Enabled: no" >> /tmp/wpref.n
 echo "Map.Static County: 77001" >> /tmp/wpref.n
 echo "Editor.Gray scale: no" >> /tmp/wpref.n
@@ -158,27 +162,31 @@ echo "Display.Map sub_skin: day" >> /tmp/wpref.n
 echo "Map.Background: #EFEBE3" >> /tmp/wpref.n
 echo "Map.Labels: yes" >> /tmp/wpref.n
 echo "Navigation.RouteColor: #9933FF" >> /tmp/wpref.n
-echo "Streets.Thickness: 4" >> /tmp/wpref.n
+echo "Streets.Thickness: 1" >> /tmp/wpref.n
 echo "Streets.Color: #8EB8D8" >> /tmp/wpref.n
-echo "Streets.Delta1: 2" >> /tmp/wpref.n
+echo "Streets.Delta1: 1" >> /tmp/wpref.n
 echo "Streets.Color1: #FFFFFF" >> /tmp/wpref.n
 echo "Streets.LabelColor: #222222" >> /tmp/wpref.n
-echo "Secondary.Thickness: 5" >> /tmp/wpref.n
+echo "Secondary.Thickness: 1" >> /tmp/wpref.n
 echo "Secondary.Color: #9AABB8" >> /tmp/wpref.n
-echo "Secondary.Delta1: 3" >> /tmp/wpref.n
+echo "Secondary.Delta1: 1" >> /tmp/wpref.n
 echo "Secondary.Color1: #E8E8E8" >> /tmp/wpref.n
-echo "Primary.Thickness: 7" >> /tmp/wpref.n
+echo "Primary.Thickness: 2" >> /tmp/wpref.n
 echo "Primary.Color: #A0A8B0" >> /tmp/wpref.n
-echo "Primary.Delta1: 4" >> /tmp/wpref.n
+echo "Primary.Delta1: 1" >> /tmp/wpref.n
 echo "Primary.Color1: #D4D4D4" >> /tmp/wpref.n
-echo "Freeways.Thickness: 9" >> /tmp/wpref.n
+echo "Highways.Thickness: 2" >> /tmp/wpref.n
+echo "Highways.Delta1: 1" >> /tmp/wpref.n
+echo "Freeways.Thickness: 2" >> /tmp/wpref.n
 echo "Freeways.Color: #B0B0B0" >> /tmp/wpref.n
-echo "Freeways.Delta1: 6" >> /tmp/wpref.n
+echo "Freeways.Delta1: 1" >> /tmp/wpref.n
 echo "Freeways.Color1: #C8C8C8" >> /tmp/wpref.n
-echo "Ramps.Thickness: 4" >> /tmp/wpref.n
+echo "Ramps.Thickness: 1" >> /tmp/wpref.n
 echo "Ramps.Color: #9BB8C8" >> /tmp/wpref.n
-echo "Ramps.Delta1: 2" >> /tmp/wpref.n
+echo "Ramps.Delta1: 1" >> /tmp/wpref.n
 echo "Ramps.Color1: #FFFFFF" >> /tmp/wpref.n
+echo "Exit.Thickness: 1" >> /tmp/wpref.n
+echo "Exit.Delta1: 1" >> /tmp/wpref.n
 cp /tmp/wpref.n "$PREF"
 cp /tmp/wpref.n "$BUNDLE"
 
@@ -191,8 +199,10 @@ if [ -f "$USERF" ]; then
   grep -v '^Welcome Wizard.First time:' | \
   grep -v '^Welcome Wizard.Terms of Use accepted:' | \
   grep -v '^Navigation.Navigation guidance type:' | \
-  grep -v '^Prompts.Name:' | \
-  grep -v '^Display.Auto night mode:' | \
+grep -v '^Prompts.Name:' | \
+grep -v '^System.Language:' | \
+grep -v '^System.Default Language:' | \
+grep -v '^Display.Auto night mode:' | \
   grep -v '^Display.Map sub_skin:' > /tmp/wuser.n
 else
   cp /dev/null /tmp/wuser.n
@@ -204,15 +214,21 @@ echo "Realtime.Random user: 0" >> /tmp/wuser.n
 echo "Welcome Wizard.First time: iphone_no" >> /tmp/wuser.n
 echo "Welcome Wizard.Terms of Use accepted: yes" >> /tmp/wuser.n
 echo "Navigation.Navigation guidance type: Minimal" >> /tmp/wuser.n
-echo "Prompts.Name: eng" >> /tmp/wuser.n
+echo "Prompts.Name: fra" >> /tmp/wuser.n
+echo "System.Language: fra" >> /tmp/wuser.n
+echo "System.Default Language: fra" >> /tmp/wuser.n
 echo "Display.Auto night mode: no" >> /tmp/wuser.n
 echo "Display.Map sub_skin: day" >> /tmp/wuser.n
 cp /tmp/wuser.n "$USERF"
 
-# Prompts MP3 Minimal → {user}/sound/eng/ (roadmap_sound.m + roadmap_prompts_exist).
-SOUND_DST="$CONTAINER/Documents/sound/eng"
+# Prompts MP3 Minimal → {user}/sound/fra/ (roadmap_sound.m + roadmap_prompts_exist).
+SOUND_DST="$CONTAINER/Documents/sound/fra"
 mkdir -p "$SOUND_DST"
-if [ -d /tmp/waze-sound-eng/eng ]; then
+if [ -d /tmp/waze-sound-fra/fra ]; then
+  cp /tmp/waze-sound-fra/fra/* "$SOUND_DST/" 2>/dev/null || true
+elif [ -d /tmp/waze-sound-fra ]; then
+  cp /tmp/waze-sound-fra/* "$SOUND_DST/" 2>/dev/null || true
+elif [ -d /tmp/waze-sound-eng/eng ]; then
   cp /tmp/waze-sound-eng/eng/* "$SOUND_DST/" 2>/dev/null || true
 elif [ -d /tmp/waze-sound-eng ]; then
   cp /tmp/waze-sound-eng/* "$SOUND_DST/" 2>/dev/null || true

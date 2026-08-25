@@ -2,16 +2,16 @@
 """Itinéraire Waze 2.4 : RoutePoints (dézoom) + segments du .wzm (zoom rue).
 
 GPL navigate_main_screen_repaint() (navigate_main.c) :
-- zoom ≥ 100 + RoutePoints → dessine l'outline OSRM puis return
+- zoom ≥ 100 + RoutePoints → outline OSRM puis return
 - zoom < 100 → uniquement les segments is_instrumented
 
-instrument_segments() refuse line_id < 0. Les stubs -1 n'affichent donc
-rien de près. Il faut les vrais (tile_id, line_id, timestamp) du .wzm
-96e7e67 (polylignes + shapes). On ne touche pas au générateur de cartes.
-
-Pas de ponts « fill » entre lignes : un segment dans une autre tuile avant
-que le précédent soit instrumenté bloque tout l'overlay violet (GPL).
-Les manœuvres OSRM sont posées par distance le long du trajet, pas par snap.
+instrument_segments() refuse line_id < 0, et n'instrumente pas une tuile
+tant que la précédente ne l'est pas. Un snap trop large accroche des rues
+à des kilomètres → morceaux violets partout. Distance = segment .wzm contre
+segment OSRM. Une ligne n'est candidate que si ses deux bouts et son
+milieu collent au couloir OSRM (~40 m) : sinon une parallèle / ruelle
+qui touche le carrefour gagne. Même tuile : nœud .wzm partagé. from_node_id
+= vrai nœud .wzm (WITH/AGAINST).
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from __future__ import annotations
 import json
 import math
 import struct
-import zlib
-from collections import defaultdict
+import threading
+from collections import defaultdict, deque
 from pathlib import Path
 
 OSRM = "https://router.project-osrm.org/route/v1/driving"
@@ -106,6 +106,23 @@ def _osrm_maneuver(man: dict) -> int:
     return CONTINUE
 
 
+def _resample_pts(
+    pts: list[tuple[int, int]], target: int
+) -> list[tuple[int, int]]:
+    """Garde début + fin, réduit vraiment à `target` points (pas un step=1)."""
+    if len(pts) <= target:
+        return pts
+    out = [pts[0]]
+    step = (len(pts) - 1) / (target - 1)
+    for k in range(1, target - 1):
+        p = pts[int(round(k * step))]
+        if p != out[-1]:
+            out.append(p)
+    if pts[-1] != out[-1]:
+        out.append(pts[-1])
+    return out
+
+
 def osrm_route(
     lon1: float, lat1: float, lon2: float, lat2: float
 ) -> tuple[list[tuple[int, int]], int, int, list[dict]] | None:
@@ -128,18 +145,19 @@ def osrm_route(
         return None
 
     length_m = float(r0.get("distance") or 0)
-    target = max(40, min(400, int(length_m / 15) + 2))
-    step = max(1, len(coords) // target)
-    pts = [
-        (int(round(c[0] * 1e6)), int(round(c[1] * 1e6)))
-        for c in coords[::step]
+    all_pts = [
+        (int(round(c[0] * 1e6)), int(round(c[1] * 1e6))) for c in coords
     ]
     origin = (int(round(lon1 * 1e6)), int(round(lat1 * 1e6)))
     dest = (int(round(lon2 * 1e6)), int(round(lat2 * 1e6)))
-    if pts[0] != origin:
-        pts.insert(0, origin)
-    if pts[-1] != dest:
-        pts.append(dest)
+    if not all_pts or all_pts[0] != origin:
+        all_pts.insert(0, origin)
+    if all_pts[-1] != dest:
+        all_pts.append(dest)
+    # Assez dense pour coller aux rues, assez court pour le fil RoutePoints.
+    # Un step entier laissait 458 pts (le client retente : réponse trop longue).
+    target = max(60, min(140, int(length_m / 15) + 2))
+    pts = _resample_pts(all_pts, target)
 
     steps: list[dict] = []
     for leg in r0.get("legs") or []:
@@ -222,6 +240,19 @@ def _name_near(lon: int, lat: int, names: list[tuple[int, int, str]]) -> str:
 _wzm_diag_cache: tuple[tuple, str] | None = None
 
 
+def invalidate_map() -> None:
+    """Après fusion Overpass : recharger le .wzm."""
+    global _lines_cache, _wzm_diag_cache, _names_cache
+    _lines_cache = None
+    _wzm_diag_cache = None
+    _names_cache = None
+    try:
+        with _route_lock:
+            _route_cache.clear()
+    except NameError:
+        pass
+
+
 def wzm_status_line(lon: float | None = None, lat: float | None = None) -> str:
     """Une ligne pour le catcher : taille, rues échelle 0, tuile GPS."""
     global _wzm_diag_cache
@@ -273,11 +304,15 @@ def _load_line_index(
         return _lines_cache[1]
 
     from wazemap import (  # type: ignore
+        DATA_SIGNATURE,
+        DATA_VERSION,
+        ENDIAN_CORRECT,
         POINT_REAL_MASK,
         S_LINE_DATA,
         S_POINT_DATA,
         S_SQUARE_DATA,
         TILE_SCALES,
+        read_tile,
         read_wzm,
         scale_factor,
         tile_edges,
@@ -291,23 +326,20 @@ def _load_line_index(
     if bbox:
         bw, bs, be, bn = bbox
 
-    for tid, off, csz, _rsz in info["entries"]:
+    for tid, off, csz, rsz in info["entries"]:
         if tid >= scale0_hi:
             continue  # échelle 0 seulement (zoom rue)
         west, east, south, north, _ = tile_edges(tid)
         if bw is not None and (east < bw or west > be or north < bs or south > bn):
             continue
+        header = (
+            DATA_SIGNATURE
+            + struct.pack("<IIII", ENDIAN_CORRECT, DATA_VERSION, csz, rsz)
+        )
         try:
-            raw = zlib.decompress(blob[off : off + csz])
+            sections = read_tile(header + blob[off : off + csz])["sections"]
         except Exception:
             continue
-        num_sections, _ = struct.unpack("<II", raw[:8])
-        idx_end = 8 + num_sections * 4
-        ends = list(struct.unpack(f"<{num_sections}I", raw[8:idx_end]))
-        starts = [0] + ends[:-1]
-        sections = {
-            i: raw[idx_end + starts[i] : idx_end + ends[i]] for i in range(num_sections)
-        }
         square = sections.get(S_SQUARE_DATA, b"")
         lines = sections.get(S_LINE_DATA, b"")
         points = sections.get(S_POINT_DATA, b"")
@@ -333,7 +365,20 @@ def _load_line_index(
             mid_lat = (lat1 + lat2) // 2
             approx = max(int((abs(lon1 - lon2) + abs(lat1 - lat2)) * 0.11), 1)
             out.append(
-                (tid, li, ts, mid_lon, mid_lat, approx, lon2, lat2, lon1, lat1)
+                (
+                    tid,
+                    li,
+                    ts,
+                    mid_lon,
+                    mid_lat,
+                    approx,
+                    lon2,
+                    lat2,
+                    lon1,
+                    lat1,
+                    frm & POINT_REAL_MASK,
+                    to & POINT_REAL_MASK,
+                )
             )
 
     _lines_cache = (cache_key, out)
@@ -379,6 +424,411 @@ def _ends(row: tuple) -> tuple[tuple[int, int], tuple[int, int]]:
 def _min_end_gap(a: tuple, b: tuple) -> int:
     ea, eb = _ends(a), _ends(b)
     return min(abs(p[0] - q[0]) + abs(p[1] - q[1]) for p in ea for q in eb)
+
+
+SNAP_U = 900  # ~100 m : assez pour l'OSRM qui coupe un coin, pas une parallèle
+JOIN_U = 450
+HEADING_MAX = 50.0
+LOOK_U = 1_400  # ~150 m d'OSRM devant pour décider un vrai virage
+SWITCH_MARGIN = 280
+CORRIDOR_U = 350  # ~40 m : les deux bouts + milieu doivent coller à l'OSRM
+
+
+def _seg_seg(
+    a1: tuple[int, int],
+    a2: tuple[int, int],
+    b1: tuple[int, int],
+    b2: tuple[int, int],
+) -> int:
+    return min(
+        _dist_to_seg(a1[0], a1[1], b1, b2),
+        _dist_to_seg(a2[0], a2[1], b1, b2),
+        _dist_to_seg(b1[0], b1[1], a1, a2),
+        _dist_to_seg(b2[0], b2[1], a1, a2),
+    )
+
+
+def _line_to_osrm(row: tuple, a: tuple[int, int], b: tuple[int, int]) -> int:
+    """Distance entre le segment .wzm (bouts) et le segment OSRM courant."""
+    return _seg_seg((row[8], row[9]), (row[6], row[7]), a, b)
+
+
+def _heading_err(row: tuple, brg: float) -> float:
+    line_brg = _bearing(row[8], row[9], row[6], row[7])
+    return min(
+        _ang_diff(brg, line_brg),
+        _ang_diff(brg, (line_brg + 180.0) % 360.0),
+    )
+
+
+def _osrm_window_cost(
+    row: tuple, pts: list[tuple[int, int]], i: int, look_u: int = LOOK_U
+) -> int:
+    """Éloignement moyen de la ligne aux ~look_u µ° d'OSRM devant le point i."""
+    if len(pts) < 2:
+        return 10**9
+    if i >= len(pts) - 1:
+        return _line_to_osrm(row, pts[-2], pts[-1])
+    acc = 0
+    n = 0
+    traveled = 0
+    j = i
+    while j < len(pts) - 1:
+        acc += _line_to_osrm(row, pts[j], pts[j + 1])
+        n += 1
+        traveled += abs(pts[j + 1][0] - pts[j][0]) + abs(pts[j + 1][1] - pts[j][1])
+        if traveled >= look_u:
+            break
+        j += 1
+    return acc // max(n, 1)
+
+
+def _dist_to_poly(lon: int, lat: int, pts: list[tuple[int, int]]) -> int:
+    best = 10**18
+    for j in range(len(pts) - 1):
+        d = _dist_to_seg(lon, lat, pts[j], pts[j + 1])
+        if d < best:
+            best = d
+            if d == 0:
+                return 0
+    return best
+
+
+def _nearest_pt_idx(lon: int, lat: int, pts: list[tuple[int, int]]) -> int:
+    best, bi = 10**18, 0
+    for i, (x, y) in enumerate(pts):
+        d = abs(x - lon) + abs(y - lat)
+        if d < best:
+            best, bi = d, i
+    return bi
+
+
+def _poly_arclen(pts: list[tuple[int, int]], i: int, j: int) -> float:
+    if i > j:
+        i, j = j, i
+    acc = 0.0
+    for k in range(i, j):
+        acc += math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1])
+    return acc
+
+
+def _on_corridor(
+    row: tuple, pts: list[tuple[int, int]], max_d: int = CORRIDOR_U
+) -> bool:
+    """True si la ligne *suit* l'OSRM, pas seulement si elle le touche.
+
+    Les deux bouts sur le couloir. Le milieu de la *corde* n'est pas exigé :
+    une courbe (Chemin de Ronde) a le milieu à l'intérieur, ça faisait des
+    trous. Un raccourci à travers un pâté a une corde trop courte vs l'OSRM.
+    """
+    if len(pts) < 2:
+        return False
+    x1, y1, x2, y2 = row[8], row[9], row[6], row[7]
+
+    def check(ax: int, ay: int, bx: int, by: int) -> bool:
+        if _dist_to_poly(ax, ay, pts) > max_d or _dist_to_poly(bx, by, pts) > max_d:
+            return False
+        chord = math.hypot(bx - ax, by - ay)
+        if chord < 900:
+            return True
+        i1 = _nearest_pt_idx(ax, ay, pts)
+        i2 = _nearest_pt_idx(bx, by, pts)
+        arc = _poly_arclen(pts, i1, i2)
+        if arc < 1:
+            return True
+        return chord >= 0.60 * arc
+
+    if check(x1, y1, x2, y2):
+        return True
+    lons = [p[0] for p in pts]
+    lats = [p[1] for p in pts]
+    west, east = min(lons) - max_d, max(lons) + max_d
+    south, north = min(lats) - max_d, max(lats) + max_d
+    line_len = abs(x2 - x1) + abs(y2 - y1)
+    span = (east - west) + (north - south)
+    if line_len < span:
+        return False
+    cx1, cy1 = max(west, min(east, x1)), max(south, min(north, y1))
+    cx2, cy2 = max(west, min(east, x2)), max(south, min(north, y2))
+    if (cx1, cy1) == (cx2, cy2):
+        return False
+    return check(cx1, cy1, cx2, cy2)
+
+
+def _shares_node(a: tuple, b: tuple) -> bool:
+    if a[0] != b[0] or len(a) < 12 or len(b) < 12:
+        return False
+    return bool({int(a[10]), int(a[11])} & {int(b[10]), int(b[11])})
+
+
+def _connected(a: tuple, b: tuple) -> bool:
+    if a[:2] == b[:2]:
+        return True
+    if a[0] == b[0]:
+        return _shares_node(a, b)
+    return _min_end_gap(a, b) < JOIN_U
+
+
+def _can_join(prev: tuple, nxt: tuple) -> bool:
+    """Même tuile : nœud .wzm partagé. Sinon bouts vraiment proches."""
+    gap = _min_end_gap(prev, nxt)
+    if prev[0] == nxt[0] and len(prev) > 11 and len(nxt) > 11:
+        shared = {int(prev[10]), int(prev[11])} & {int(nxt[10]), int(nxt[11])}
+        if shared:
+            return gap < JOIN_U * 4
+        return gap < 120
+    return gap < JOIN_U
+
+
+def _from_node_for(
+    row: tuple, prev_xy: tuple[int, int] | None, route_brg: float | None
+) -> int:
+    frm_id = int(row[10]) if len(row) > 10 else 0
+    to_id = int(row[11]) if len(row) > 11 else 0
+    blon, blat, elon, elat = row[8], row[9], row[6], row[7]
+    if prev_xy is not None:
+        d_from = abs(blon - prev_xy[0]) + abs(blat - prev_xy[1])
+        d_to = abs(elon - prev_xy[0]) + abs(elat - prev_xy[1])
+        return frm_id if d_from <= d_to else to_id
+    line_brg = _bearing(blon, blat, elon, elat)
+    if route_brg is None:
+        return frm_id
+    if _ang_diff(route_brg, line_brg) <= _ang_diff(route_brg, (line_brg + 180.0) % 360.0):
+        return frm_id
+    return to_id
+
+
+def _exit_xy(row: tuple, from_node: int) -> tuple[int, int]:
+    frm_id = int(row[10]) if len(row) > 10 else 0
+    if from_node == frm_id:
+        return int(row[6]), int(row[7])
+    return int(row[8]), int(row[9])
+
+
+def _geom_join(a: tuple, b: tuple, limit: int = JOIN_U) -> bool:
+    """Même graphe visuel : nœud partagé, ou bouts qui se touchent (allée / maison)."""
+    if a[:2] == b[:2]:
+        return True
+    if _shares_node(a, b):
+        return True
+    return _min_end_gap(a, b) < limit
+
+
+def _row_dist_xy(row: tuple, xy: tuple[int, int]) -> int:
+    return min(
+        abs(row[3] - xy[0]) + abs(row[4] - xy[1]),
+        abs(row[8] - xy[0]) + abs(row[9] - xy[1]),
+        abs(row[6] - xy[0]) + abs(row[7] - xy[1]),
+    )
+
+
+def _bfs_bridge(
+    prev: tuple,
+    nxt: tuple,
+    pool: list[tuple],
+    *,
+    max_hops: int = 8,
+    geom: bool = False,
+) -> list[tuple]:
+    """Lignes du couloir qui relient prev à nxt (nœuds .wzm / bord de tuile)."""
+    if _connected(prev, nxt) or (geom and _geom_join(prev, nxt)):
+        return []
+    allowed = {prev[0], nxt[0]}
+    nodes = [r for r in pool if r[0] in allowed]
+    inc: dict[tuple[int, int], list[tuple]] = defaultdict(list)
+    for r in nodes:
+        if len(r) > 11:
+            inc[(int(r[0]), int(r[10]))].append(r)
+            inc[(int(r[0]), int(r[11]))].append(r)
+    join_u = JOIN_U * 2 if geom else JOIN_U
+
+    def neighbors(row: tuple) -> list[tuple]:
+        out: list[tuple] = []
+        seen: set[tuple] = set()
+        if len(row) > 11:
+            for nid in (int(row[10]), int(row[11])):
+                for o in inc.get((int(row[0]), nid), ()):
+                    if o[:2] != row[:2] and o[:2] not in seen:
+                        seen.add(o[:2])
+                        out.append(o)
+        for o in nodes:
+            if o[:2] == row[:2] or o[:2] in seen:
+                continue
+            if o[0] != row[0] and _min_end_gap(row, o) < join_u:
+                seen.add(o[:2])
+                out.append(o)
+            elif geom and o[0] == row[0] and _min_end_gap(row, o) < join_u:
+                seen.add(o[:2])
+                out.append(o)
+        return out
+
+    start, goal = prev[:2], nxt[:2]
+    came: dict[tuple, tuple | None] = {start: None}
+    hops: dict[tuple, int] = {start: 0}
+    row_of: dict[tuple, tuple] = {start: prev, goal: nxt}
+    q: deque[tuple] = deque([prev])
+    found = False
+    while q:
+        cur = q.popleft()
+        if hops[cur[:2]] >= max_hops:
+            continue
+        for o in neighbors(cur):
+            k = o[:2]
+            if k in came:
+                continue
+            came[k] = cur[:2]
+            hops[k] = hops[cur[:2]] + 1
+            row_of[k] = o
+            if k == goal:
+                found = True
+                q.clear()
+                break
+            q.append(o)
+    if not found:
+        return []
+    keys: list[tuple] = []
+    k: tuple | None = goal
+    while k is not None and k != start:
+        keys.append(k)
+        k = came.get(k)
+    keys.reverse()
+    if not keys or keys[-1] != goal:
+        return []
+    return [row_of[k] for k in keys[:-1]]
+
+
+def _fill_along_route(
+    raw: list[tuple], index: list[tuple], pts: list[tuple[int, int]]
+) -> list[tuple]:
+    """Ponts dans les tuiles du trajet, le long de l'OSRM, via le graphe .wzm.
+
+    Même si les bouts sont à < 50 m, s'ils ne partagent pas de nœud il manque
+    un morceau (courbe, intersection) → trou violet. Pas de 3e tuile.
+    """
+    if len(raw) < 2 or len(pts) < 2:
+        return raw
+    pool = [r for r in index if _on_corridor(r, pts)]
+    out = [raw[0]]
+    for nxt in raw[1:]:
+        out.extend(_bfs_bridge(out[-1], nxt, pool))
+        out.append(nxt)
+    return out
+
+
+def _closest_row(
+    index: list[tuple], lon: int, lat: int, limit: int = SNAP_U * 3
+) -> tuple | None:
+    best, hit = 10**18, None
+    for row in index:
+        d = min(
+            abs(row[3] - lon) + abs(row[4] - lat),
+            abs(row[8] - lon) + abs(row[9] - lat),
+            abs(row[6] - lon) + abs(row[7] - lat),
+        )
+        if d < best:
+            best, hit = d, row
+    if hit is None or best > limit:
+        return None
+    return hit
+
+
+def _walk_to_pin(
+    start: tuple,
+    target: tuple[int, int],
+    index: list[tuple],
+    pts: list[tuple[int, int]],
+    *,
+    max_hops: int = 14,
+) -> list[tuple]:
+    """Marche le graphe .wzm vers le pin (maison / dest) sans sauter une parallèle.
+
+    Un bout d'allée n'a souvent pas le même nœud que la rue : on accepte les
+    bouts qui se touchent, mais seulement si on se rapproche du pin ou si on
+    reste dans le couloir OSRM.
+    """
+    cur = start
+    out: list[tuple] = []
+    used = {cur[:2]}
+    for _ in range(max_hops):
+        dcur = _row_dist_xy(cur, target)
+        if dcur < JOIN_U:
+            break
+        best, bd = None, dcur
+        for o in index:
+            if o[:2] in used or not _geom_join(cur, o, JOIN_U * 2):
+                continue
+            d = _row_dist_xy(o, target)
+            closer = d + 40 < dcur
+            on_way = _on_corridor(o, pts, CORRIDOR_U * 2)
+            if not closer and not on_way:
+                continue
+            if d < bd or (d == bd and on_way):
+                bd, best = d, o
+        if best is None or best[:2] == cur[:2]:
+            break
+        out.append(best)
+        used.add(best[:2])
+        cur = best
+    return out
+
+
+def _dedupe_rows(raw: list[tuple]) -> list[tuple]:
+    out: list[tuple] = []
+    for r in raw:
+        if not out or out[-1][:2] != r[:2]:
+            out.append(r)
+    return out
+
+
+def _attach_pin(
+    raw: list[tuple],
+    pin: tuple | None,
+    target: tuple[int, int],
+    index: list[tuple],
+    pts: list[tuple[int, int]],
+    *,
+    front: bool,
+) -> list[tuple]:
+    if pin is None or not raw:
+        return raw
+    edge = raw[0] if front else raw[-1]
+    if pin[:2] == edge[:2]:
+        extra = _walk_to_pin(edge, target, index, pts)
+        return _dedupe_rows((list(reversed(extra)) + raw) if front else (raw + extra))
+    pool = [
+        r for r in index if _on_corridor(r, pts) or r[:2] in (pin[:2], edge[:2])
+    ]
+    if front:
+        bridge = _bfs_bridge(pin, edge, pool, geom=True, max_hops=12)
+    else:
+        bridge = _bfs_bridge(edge, pin, pool, geom=True, max_hops=12)
+    if bridge or _geom_join(pin, edge):
+        return _dedupe_rows(
+            ([pin] + bridge + raw) if front else (raw + bridge + [pin])
+        )
+    extra = _walk_to_pin(edge, target, index, pts)
+    if front:
+        head = list(reversed(extra))
+        if not head or head[0][:2] != pin[:2]:
+            head = [pin] + head
+        return _dedupe_rows(head + raw)
+    tail = extra
+    if not tail or tail[-1][:2] != pin[:2]:
+        tail = tail + [pin]
+    return _dedupe_rows(raw + tail)
+
+
+def _pin_ends(
+    raw: list[tuple], index: list[tuple], pts: list[tuple[int, int]]
+) -> list[tuple]:
+    """Colle le 1er et le dernier point OSRM (maison / dest), même hors couloir."""
+    if not raw or len(pts) < 2:
+        return raw
+    start = _closest_row(index, pts[0][0], pts[0][1], SNAP_U * 4)
+    end = _closest_row(index, pts[-1][0], pts[-1][1], SNAP_U * 4)
+    raw = _attach_pin(raw, start, pts[0], index, pts, front=True)
+    raw = _attach_pin(raw, end, pts[-1], index, pts, front=False)
+    return raw
 
 
 def _fill_line_gaps(raw: list[tuple], index: list[tuple]) -> list[tuple]:
@@ -451,7 +901,7 @@ def _turn_instr(b1: float, b2: float, *, name_change: bool = False) -> int:
 def _match_segments(
     pts: list[tuple[int, int]], total_len: int, total_time: int
 ) -> list[dict]:
-    pad = 40_000  # ~0.04°
+    pad = 40_000  # bbox d'index seulement (~4 km), pas le rayon de snap
     lons = [p[0] for p in pts]
     lats = [p[1] for p in pts]
     bbox = (min(lons) - pad, min(lats) - pad, max(lons) + pad, max(lats) + pad)
@@ -460,63 +910,49 @@ def _match_segments(
     if not index or len(pts) < 2:
         return []
 
-    cell = 5_000
+    corridor_ids = {row[:2] for row in index if _on_corridor(row, pts)}
+    if not corridor_ids:
+        corridor_ids = {
+            row[:2] for row in index if _on_corridor(row, pts, CORRIDOR_U * 2)
+        }
+    for p in (pts[0], pts[-1]):
+        hit = _closest_row(index, p[0], p[1])
+        if hit:
+            corridor_ids.add(hit[:2])
+
+    cell = 2_000
     grid: dict[tuple[int, int], list[int]] = defaultdict(list)
     for i, row in enumerate(index):
-        grid[(row[3] // cell, row[4] // cell)].append(i)
+        x1, y1, x2, y2 = row[8], row[9], row[6], row[7]
+        steps = max(abs(x2 - x1), abs(y2 - y1), 1) // cell + 1
+        stamped: set[tuple[int, int]] = set()
+        for t in range(steps + 1):
+            x = x1 + (x2 - x1) * t // steps
+            y = y1 + (y2 - y1) * t // steps
+            stamped.add((x // cell, y // cell))
+        stamped.add((row[3] // cell, row[4] // cell))
+        for key in stamped:
+            grid[key].append(i)
 
-    def candidates(lon: int, lat: int):
+    def candidates(lon: int, lat: int, seg_a: tuple[int, int], seg_b: tuple[int, int]):
         cx, cy = lon // cell, lat // cell
+        seen: set[int] = set()
         pool: list[tuple[int, int]] = []
         for gx in (cx - 1, cx, cx + 1):
             for gy in (cy - 1, cy, cy + 1):
                 for ii in grid.get((gx, gy), ()):
-                    row = index[ii]
-                    d = abs(row[3] - lon) + abs(row[4] - lat)
+                    if ii in seen:
+                        continue
+                    seen.add(ii)
+                    d = _line_to_osrm(index[ii], seg_a, seg_b)
                     pool.append((d, ii))
         pool.sort()
-        for _d, ii in pool[:60]:
+        for _d, ii in pool[:120]:
             yield index[ii]
 
-    def best_at(lon: int, lat: int, route_brg: float | None, seg_a, seg_b, prev):
-        best = None
-        best_score = 10**18
-        for row in candidates(lon, lat):
-            tid, li, ts, mlon, mlat, alen, elon, elat, blon, blat = row
-            # Colle au segment OSRM local (pas toute la polyligne).
-            if _dist_to_seg(mlon, mlat, seg_a, seg_b) > 45_000:
-                continue
-            d = abs(mlon - lon) + abs(mlat - lat)
-            line_brg = _bearing(blon, blat, elon, elat)
-            if route_brg is not None:
-                ad = _ang_diff(route_brg, line_brg)
-                ad_rev = _ang_diff(route_brg, (line_brg + 180) % 360)
-                ad = min(ad, ad_rev)
-                if ad > 55:
-                    continue
-                d += int(ad * 400)
-            if prev is not None:
-                if tid == prev[0] and li == prev[1]:
-                    d = d // 5
-                else:
-                    gap = min(
-                        abs(blon - prev[6]) + abs(blat - prev[7]),
-                        abs(blon - prev[3]) + abs(blat - prev[4]),
-                        abs(elon - prev[6]) + abs(elat - prev[7]),
-                    )
-                    if gap < 30_000:
-                        d = max(0, d - 25_000)
-                    elif gap > 100_000:
-                        d += 60_000
-            if d < best_score:
-                best_score = d
-                best = row
-        if best is None or best_score > 70_000:
-            return None
-        return best
-
     raw: list[tuple] = []
-    prev = None
+    prev: tuple | None = None
+    skipped = 0
     for i, (lon, lat) in enumerate(pts):
         if i + 1 < len(pts):
             seg_a, seg_b = pts[i], pts[i + 1]
@@ -526,34 +962,63 @@ def _match_segments(
             brg = _bearing(pts[i - 1][0], pts[i - 1][1], lon, lat)
         else:
             continue
-        hit = best_at(lon, lat, brg, seg_a, seg_b, prev)
-        if not hit:
-            continue
-        if not raw or raw[-1][:2] != hit[:2]:
-            raw.append(hit)
-        prev = hit
 
-    if not raw:
-        for i, (lon, lat) in enumerate(pts):
-            if i + 1 < len(pts):
-                seg_a, seg_b = pts[i], pts[i + 1]
-            elif i > 0:
-                seg_a, seg_b = pts[i - 1], pts[i]
-            else:
+        at_end = i <= 1 or i >= len(pts) - 2
+        snap = SNAP_U * 2 if at_end else SNAP_U
+        heading_lim = 90.0 if at_end else HEADING_MAX
+        nearby: list[tuple] = []
+        for row in candidates(lon, lat, seg_a, seg_b):
+            if row[:2] not in corridor_ids:
                 continue
-            best = None
-            best_d = 10**18
-            for row in candidates(lon, lat):
-                d = _dist_to_seg(row[3], row[4], seg_a, seg_b)
-                if d < best_d:
-                    best_d = d
-                    best = row
-            if best is None or best_d > 120_000:
+            d_path = _line_to_osrm(row, seg_a, seg_b)
+            if d_path > snap:
                 continue
-            if not raw or raw[-1][:2] != best[:2]:
-                raw.append(best)
-        if raw:
-            print(f"  matcher 2e passe: {len(raw)} lignes", flush=True)
+            if _heading_err(row, brg) > heading_lim:
+                continue
+            nearby.append(row)
+
+        best = None
+        best_cost = 10**18
+        for row in nearby:
+            joinable = (
+                prev is None or row[:2] == prev[:2] or _can_join(prev, row)
+            )
+            left_prev = (
+                prev is not None and _line_to_osrm(prev, seg_a, seg_b) > SNAP_U
+            )
+            if not joinable and not left_prev:
+                continue
+            cost = _osrm_window_cost(row, pts, i)
+            if prev is not None and row[:2] == prev[:2]:
+                cost = cost // 2
+            elif prev is not None and row[0] != prev[0]:
+                cost += 80
+            if not joinable:
+                cost += 400
+            if cost < best_cost:
+                best_cost = cost
+                best = row
+
+        if prev is not None:
+            stay_now = _line_to_osrm(prev, seg_a, seg_b)
+            stay_cost = _osrm_window_cost(prev, pts, i)
+            if best is None or best[:2] == prev[:2]:
+                if stay_now <= SNAP_U * 2:
+                    best = prev
+            elif stay_now <= SNAP_U * 2 and stay_cost <= best_cost + SWITCH_MARGIN:
+                best = prev
+
+        if best is None and at_end:
+            hit = _closest_row(index, lon, lat, SNAP_U * 4)
+            if hit is not None:
+                best = hit
+                best_cost = 0
+        if best is None:
+            skipped += 1
+            continue
+        if not raw or raw[-1][:2] != best[:2]:
+            raw.append(best)
+        prev = best
 
     i = 1
     while i < len(raw) - 1:
@@ -562,19 +1027,35 @@ def _match_segments(
             continue
         i += 1
 
+    raw = _fill_along_route(raw, index, pts)
+    raw = _pin_ends(raw, index, pts)
+    raw = _fill_along_route(raw, index, pts)
+
     if not raw:
         return []
 
-    raw = _downsample_lines(raw)
-    if not raw:
-        return []
+    n_tiles = len({r[0] for r in raw})
+    print(
+        f"  trace wzm lignes={len(raw)} tuiles={n_tiles} "
+        f"osrm_pts={len(pts)} ignorés={skipped}",
+        flush=True,
+    )
 
     weights = [max(r[5], 1) for r in raw]
     wsum = sum(weights) or 1
     segs: list[dict] = []
     remain_l, remain_t = total_len, total_time
+    prev_xy: tuple[int, int] | None = pts[0]
     for i, row in enumerate(raw):
         tid, li, ts, mlon, mlat, alen, elon, elat = row[:8]
+        if i + 1 < len(raw):
+            brg = _bearing(mlon, mlat, raw[i + 1][3], raw[i + 1][4])
+        elif i > 0:
+            brg = _bearing(raw[i - 1][3], raw[i - 1][4], mlon, mlat)
+        else:
+            brg = _bearing(pts[0][0], pts[0][1], pts[-1][0], pts[-1][1])
+        from_node = _from_node_for(row, prev_xy, brg)
+        prev_xy = _exit_xy(row, from_node)
         if i == len(raw) - 1:
             sl, st = max(remain_l, 1), max(remain_t, 1)
         else:
@@ -597,6 +1078,7 @@ def _match_segments(
                 "name": name,
                 "instr": CONTINUE,
                 "dest_name": name,
+                "from_node": from_node,
             }
         )
 
@@ -689,7 +1171,7 @@ def _segments_from_steps(
             d = abs(row[3] - st["lon"]) + abs(row[4] - st["lat"])
             if d < best:
                 best, hit = d, row
-        if hit is None or best > 200_000:
+        if hit is None or best > SNAP_U * 2:
             continue
         tid, li, ts, mlon, mlat, alen, elon, elat = hit[:8]
         if i == len(steps) - 1:
@@ -737,7 +1219,7 @@ def _route_segment_rows(route_id: int, alt_id: int, segs: list[dict]) -> list[st
                 str(v)
                 for v in (
                     s["line"],
-                    0,
+                    int(s.get("from_node") or 0),
                     s["len"],
                     s["time"],
                     _wire(s["instr"]),
@@ -797,23 +1279,46 @@ def via_label_from_steps(steps: list[dict], dest_name: str = "") -> str:
     return ""
 
 
-def routing_body(
+_route_lock = threading.Lock()
+_route_cache: dict[tuple, dict] = {}
+_route_inflight: dict[tuple, threading.Event] = {}
+
+
+def _route_key(lon1: float, lat1: float, lon2: float, lat2: float) -> tuple:
+    return (round(lon1, 4), round(lat1, 4), round(lon2, 4), round(lat2, 4))
+
+
+def _format_route(
     route_id: int,
-    lon1: float,
-    lat1: float,
-    lon2: float,
-    lat2: float,
-    dest_name: str = "",
+    pts: list[tuple[int, int]],
+    length: int,
+    duration: int,
+    matched: list[dict],
+    via: str,
 ) -> bytes:
+    alt_id = 1
+    nseg = len(matched)
+    rows = [
+        "RC,200,OK",
+        f"RoutingResponseCode,{route_id},1,200,OK",
+        f"RoutingResponse,{route_id},{ROUTE_ORIGINAL},{alt_id},{via},"
+        f"{length},{duration},{nseg},0,0,0",
+        "RoutePoints,"
+        + f"{route_id},{alt_id},{len(pts)},0,{len(pts) * 2},"
+        + ",".join(f"{lon},{lat}" for lon, lat in pts),
+    ]
+    if matched:
+        rows.extend(_route_segment_rows(route_id, alt_id, matched))
+    return ("\r\n".join(rows) + "\r\n").encode("ascii")
+
+
+def _compute_route(
+    lon1: float, lat1: float, lon2: float, lat2: float, dest_name: str
+) -> dict | None:
     got = osrm_route(lon1, lat1, lon2, lat2)
     if not got:
-        return (
-            f"RC,200,OK\r\n"
-            f"RoutingResponseCode,{route_id},0,500,No route\r\n"
-        ).encode("ascii")
-
+        return None
     pts, length, duration, steps = got
-    alt_id = 1
     print(wzm_status_line(lon1, lat1), flush=True)
     try:
         matched = _match_segments(pts, length, duration)
@@ -822,14 +1327,10 @@ def routing_body(
         matched = []
     if matched:
         _apply_osrm_steps(matched, steps)
-    else:
-        matched = _segments_from_steps(steps, length, duration)
-
     dest = _ascii(dest_name)
     via = via_label_from_steps(steps, dest)
     if matched and dest:
         matched[-1]["dest_name"] = dest
-
     n_turns = sum(
         1
         for s in matched
@@ -845,20 +1346,82 @@ def routing_body(
             "Continue approaching destination)",
             flush=True,
         )
+    return {
+        "pts": pts,
+        "length": length,
+        "duration": duration,
+        "matched": matched,
+        "via": via,
+    }
 
-    nseg = len(matched)
-    rows = [
-        "RC,200,OK",
-        f"RoutingResponseCode,{route_id},1,200,OK",
-        f"RoutingResponse,{route_id},{ROUTE_ORIGINAL},{alt_id},{via},"
-        f"{length},{duration},{nseg},0,0,0",
-        "RoutePoints,"
-        + f"{route_id},{alt_id},{len(pts)},0,{len(pts) * 2},"
-        + ",".join(f"{lon},{lat}" for lon, lat in pts),
-    ]
-    if matched:
-        rows.extend(_route_segment_rows(route_id, alt_id, matched))
-    return ("\r\n".join(rows) + "\r\n").encode("ascii")
+
+def routing_body(
+    route_id: int,
+    lon1: float,
+    lat1: float,
+    lon2: float,
+    lat2: float,
+    dest_name: str = "",
+) -> bytes:
+    key = _route_key(lon1, lat1, lon2, lat2)
+    with _route_lock:
+        cached = _route_cache.get(key)
+        if cached is not None:
+            print("  itinéraire (cache)", flush=True)
+            return _format_route(
+                route_id,
+                cached["pts"],
+                cached["length"],
+                cached["duration"],
+                cached["matched"],
+                cached["via"],
+            )
+        ev = _route_inflight.get(key)
+        mine = ev is None
+        if mine:
+            ev = threading.Event()
+            _route_inflight[key] = ev
+    if not mine:
+        ev.wait(timeout=30)
+        with _route_lock:
+            cached = _route_cache.get(key)
+        if cached is None:
+            return (
+                f"RC,200,OK\r\n"
+                f"RoutingResponseCode,{route_id},0,500,No route\r\n"
+            ).encode("ascii")
+        print("  itinéraire (attente)", flush=True)
+        return _format_route(
+            route_id,
+            cached["pts"],
+            cached["length"],
+            cached["duration"],
+            cached["matched"],
+            cached["via"],
+        )
+    try:
+        computed = _compute_route(lon1, lat1, lon2, lat2, dest_name)
+        if computed is None:
+            return (
+                f"RC,200,OK\r\n"
+                f"RoutingResponseCode,{route_id},0,500,No route\r\n"
+            ).encode("ascii")
+        with _route_lock:
+            _route_cache[key] = computed
+            while len(_route_cache) > 8:
+                _route_cache.pop(next(iter(_route_cache)))
+        return _format_route(
+            route_id,
+            computed["pts"],
+            computed["length"],
+            computed["duration"],
+            computed["matched"],
+            computed["via"],
+        )
+    finally:
+        with _route_lock:
+            _route_inflight.pop(key, None)
+        ev.set()
 
 
 def parse_routing_request(body: bytes) -> tuple[int, float, float, float, float] | None:

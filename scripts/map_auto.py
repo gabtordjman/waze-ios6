@@ -170,6 +170,120 @@ def schedule_build(lon: float, lat: float, *, force: bool = False) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+HALF_EXPAND_DEG = 0.025  # ~2,8 km autour d'un point hors carte
+
+
+def _needs_expand(lon: float, lat: float, bbox_u: tuple[int, int, int, int]) -> bool:
+    """True si le point est hors carte ou à moins d'~1 km du bord."""
+    west, south, east, north = bbox_u
+    margin = 10_000
+    lu, la = int(round(lon * 1e6)), int(round(lat * 1e6))
+    return (
+        lu < west + margin
+        or lu > east - margin
+        or la < south + margin
+        or la > north - margin
+    )
+
+
+def _current_bbox_u() -> tuple[int, int, int, int] | None:
+    state = _load_state()
+    b = state.get("bbox")
+    if isinstance(b, list) and len(b) == 4:
+        return (
+            int(round(float(b[0]) * 1e6)),
+            int(round(float(b[1]) * 1e6)),
+            int(round(float(b[2]) * 1e6)),
+            int(round(float(b[3]) * 1e6)),
+        )
+    wzm = ROOT / "maps" / REGION / "map77001.wzm"
+    if wzm.is_file():
+        from wazemap import read_wzm
+
+        return read_wzm(wzm)["bbox"]
+    return None
+
+
+def expand_sync(lon: float, lat: float) -> int:
+    """Ajoute des tuiles OSM autour d'un point, sans écraser la carte actuelle."""
+    import time
+
+    from wazemap import (
+        build_tiles,
+        fetch_overpass,
+        merge_wzm,
+        read_wzm,
+        ways_from_elements,
+    )
+
+    wzm = ROOT / "maps" / REGION / "map77001.wzm"
+    if not wzm.is_file():
+        return build_sync(lon, lat)
+    bbox_u = read_wzm(wzm)["bbox"]
+    if not _needs_expand(lon, lat, bbox_u):
+        return 0
+    west, south = lon - HALF_EXPAND_DEG, lat - HALF_EXPAND_DEG
+    east, north = lon + HALF_EXPAND_DEG, lat + HALF_EXPAND_DEG
+    print(
+        f"Expansion OSM {west:.5f},{south:.5f},{east:.5f},{north:.5f} "
+        f"(sans écraser la carte)",
+        flush=True,
+    )
+    elements = fetch_overpass(
+        (west, south, east, north), timeout=45, attempts=1, required=False
+    )
+    if not elements:
+        print("  Overpass vide — expansion ignorée", flush=True)
+        return 0
+    ways = list(ways_from_elements(elements))
+    builders = build_tiles(ways, [0, 1])
+    if not builders:
+        print("  aucune tuile à fusionner", flush=True)
+        return 0
+    ts = int(time.time())
+    payloads = {tid: b.payload(ts) for tid, b in builders.items()}
+    total, added = merge_wzm(wzm, payloads)
+    print(f"  fusion: +{added} tuiles, {total} au total", flush=True)
+    info = read_wzm(wzm)
+    w, s, e, n = info["bbox"]
+    with _lock:
+        st = _load_state()
+        st["bbox"] = [w / 1e6, s / 1e6, e / 1e6, n / 1e6]
+        _save_state(st)
+    try:
+        from waze_route import invalidate_map
+
+        invalidate_map()
+    except Exception:
+        pass
+    return 0
+
+
+def schedule_expand(lon: float, lat: float) -> None:
+    """Télécharge la zone si le point est au bord / hors de la carte (VPS / dest)."""
+    if not coords_sane(lon, lat):
+        return
+    bbox_u = _current_bbox_u()
+    if bbox_u is not None and not _needs_expand(lon, lat, bbox_u):
+        return
+
+    def _run() -> None:
+        global _busy
+        with _lock:
+            if _busy:
+                return
+            _busy = True
+        try:
+            expand_sync(lon, lat)
+        except Exception as exc:
+            print(f"  expansion FAIL: {type(exc).__name__}: {exc}", flush=True)
+        finally:
+            with _lock:
+                _busy = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def coords_from_log() -> tuple[float, float] | None:
     if not LOG.exists():
         return None

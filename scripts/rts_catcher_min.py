@@ -44,10 +44,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from map_auto import (
         schedule_build as _schedule_map_build,
+        schedule_expand as _schedule_map_expand,
         coords_sane,
     )
 except ImportError:
     def _schedule_map_build(lon: float, lat: float, *, force: bool = False) -> None:
+        pass
+
+    def _schedule_map_expand(lon: float, lat: float) -> None:
         pass
 
     def coords_sane(lon: float, lat: float) -> bool:
@@ -65,7 +69,7 @@ except ImportError:
     def _note_tile_served(kind: str = "wzm") -> None:
         pass
 
-CATCHER_REV = "proto150-route-20260825y"
+CATCHER_REV = "proto150-route-20260826f"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -435,9 +439,9 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Download", "Langs", f"{BASE}/resources/langs/"),
         ("Download", "Images", f"{BASE}/resources/images/"),
         ("Download", "Sound", f"{BASE}/resources/sounds/"),
-        ("Download", "Sound_Ver", "1.0"),
-        ("Download", "Config_Ver", "1.0"),
-        ("Download", "Langs_Ver", "1.0"),
+        ("Download", "Sound_Ver", "1.1"),
+        ("Download", "Config_Ver", "1.1"),
+        ("Download", "Langs_Ver", "1.1"),
         # Tuiles HTTP : le client complète la carte au pan/dézoom sans SSH.
         ("Download", "Tiles", f"{BASE}/tiles"),
         # TTS WAS bloque le login (« Preparing navigation voice »). MP3 Minimal à la place.
@@ -446,7 +450,26 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Navigation", "Navigation guidance enabled", "yes"),
         ("Navigation", "Guidance type default", "Minimal"),
         ("Navigation", "Navigation guidance type", "Minimal"),
-        ("Prompts", "Name", "eng"),
+        ("Prompts", "Name", "fra"),
+        ("System", "Language", "fra"),
+        ("System", "Default Language", "fra"),
+        # Épaisseur : roadmap_layer.c lit Streets.Thickness dans le schema,
+        # mais on_server_config déclare la même clé en preferences (cherchée
+        # avant le schema). On ne touche pas aux couleurs — le style reste.
+        ("Streets", "Thickness", "1"),
+        ("Streets", "Delta1", "1"),
+        ("Secondary", "Thickness", "1"),
+        ("Secondary", "Delta1", "1"),
+        ("Primary", "Thickness", "2"),
+        ("Primary", "Delta1", "1"),
+        ("Highways", "Thickness", "2"),
+        ("Highways", "Delta1", "1"),
+        ("Freeways", "Thickness", "2"),
+        ("Freeways", "Delta1", "1"),
+        ("Ramps", "Thickness", "1"),
+        ("Ramps", "Delta1", "1"),
+        ("Exit", "Thickness", "1"),
+        ("Exit", "Delta1", "1"),
         ("Download", "Source", f"{BASE}/maps"),
         ("Map", "Static County", str(WORLD_FIPS)),
         ("Download", "Enabled", "no"),
@@ -473,7 +496,7 @@ def _body_geo() -> bytes:
         for i, (cat, key, val) in enumerate(_server_params())
     ]
     return _lines(
-        ["RC,200,OK", f"GeoServerConfig,1,world,eng,{len(rows)},1", *rows]
+        ["RC,200,OK", f"GeoServerConfig,1,world,fra,{len(rows)},1", *rows]
     )
 
 
@@ -569,6 +592,7 @@ def _note_map_displayed(req_body: bytes) -> None:
         return
     ids = ", ".join(f"s{s}={_tile_id(lon, lat, s)}" for s in range(len(_TILE_SCALES)))
     _log(f"  centre {lon:.6f},{lat:.6f} → tuiles attendues: {ids}")
+    _schedule_map_expand(lon, lat)
 
 
 def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
@@ -633,6 +657,7 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
             f"  itinéraire #{rid} {lon1:.5f},{lat1:.5f} → {lon2:.5f},{lat2:.5f}"
             + (f" dest={dest!r}" if dest else "")
         )
+        _schedule_map_expand(lon2, lat2)
         try:
             body = routing_body(rid, lon1, lat1, lon2, lat2, dest_name=dest)
         except Exception as e:
@@ -1011,7 +1036,7 @@ def main() -> None:
     _log("Succès = ★★★ LOGIN ACCEPTÉ (le client envoie At/SeeMe).")
     _log("Remise à zéro du balayage: rm logs/login-variant.txt")
     _log(f"Carte annoncée: Map.Static County={WORLD_FIPS}.")
-    _log("  Carte = maps/auto (figée). Pas d'expansion Overpass au pan/route.")
+    _log("  Carte = maps/auto. Expansion Overpass si dest/pan hors bbox (fusion, pas d'écrasement).")
     _log("  Nav = segments wzm (zoom rue) + RoutePoints OSRM (dézoom). Tuiles = wzm only.")
     _log(wzm_status_line())
 

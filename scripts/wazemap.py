@@ -138,6 +138,16 @@ def max_category(scale: int) -> int:
     return SCALE_MAX_CATEGORY.get(scale, ROAD_FREEWAY)
 
 
+def display_category(category: int, scale: int) -> int:
+    """Zoom rue : primary/secondary OSM en STREET (Waze les peint en jaune).
+
+    Dézoom (échelle ≥ 2) : on garde primary/secondary pour voir les axes.
+    """
+    if scale == 0 and category in (ROAD_PRIMARY, ROAD_SECONDARY):
+        return ROAD_STREET
+    return category
+
+
 # Densité des shapes : plus on dézoome, moins on garde de sommets.
 SHAPE_STEP = {0: 1, 1: 1, 2: 2, 3: 4, 4: 8, 5: 16}
 
@@ -292,6 +302,32 @@ def write_wzm(path: Path, tiles: dict[int, bytes], bbox_u: tuple[int, int, int, 
         offset += len(comp)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(header + bytes(index) + bytes(blobs))
+
+
+def extract_payloads(path: Path) -> tuple[dict[int, bytes], tuple[int, int, int, int]]:
+    """Payloads décompressés d'un .wzm existant."""
+    info = read_wzm(path)
+    blob = path.read_bytes()
+    tiles: dict[int, bytes] = {}
+    for tid, off, csz, _rsz in info["entries"]:
+        tiles[tid] = zlib.decompress(blob[off : off + csz])
+    return tiles, info["bbox"]
+
+
+def merge_wzm(path: Path, new_payloads: dict[int, bytes]) -> tuple[int, int]:
+    """Fusionne des tuiles dans un .wzm (écrase les stubs vides). Retourne (total, ajoutées)."""
+    tiles, _bbox = extract_payloads(path)
+    before = len(tiles)
+    tiles.update(new_payloads)
+    edges = [tile_edges(tid) for tid in tiles]
+    bbox_u = (
+        min(e[0] for e in edges),
+        min(e[2] for e in edges),
+        max(e[1] for e in edges),
+        max(e[3] for e in edges),
+    )
+    write_wzm(path, tiles, bbox_u)
+    return len(tiles), len(tiles) - before
 
 
 # ── Construction d'une tuile ─────────────────────────────────────────────────
@@ -667,7 +703,8 @@ def build_tiles(ways, scales: list[int]) -> dict[int, TileBuilder]:
             category, coords = item[0], item[1]
             name = ""
         for scale in scales:
-            if category > max_category(scale):
+            cat = display_category(category, scale)
+            if cat > max_category(scale):
                 continue
             for tid, pts, from_cut, to_cut in clip_way_to_tiles(coords, scale):
                 builder = tiles.get(tid)
@@ -680,7 +717,7 @@ def build_tiles(ways, scales: list[int]) -> dict[int, TileBuilder]:
                     pts = [head, *mid, tail]
                 # Noms seulement à l'échelle rue (labels 2011).
                 label = name if scale == 0 else ""
-                builder.add_polyline(category, pts, from_cut, to_cut, name=label)
+                builder.add_polyline(cat, pts, from_cut, to_cut, name=label)
 
     saturated = [tid for tid, b in tiles.items() if b.overflow]
     if saturated:
