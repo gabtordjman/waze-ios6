@@ -54,7 +54,7 @@ cp .env.example .env
 nano .env   # WAZE_SERVER_IP=TON_IP_PUBLIQUE
 ```
 
-Exemple `.env` :
+Exemple `.env` (Apache déjà sur 80/443 → catcher ailleurs) :
 
 ```
 WAZE_MODE=vps
@@ -62,9 +62,12 @@ WAZE_SERVER_IP=203.0.113.50
 SKIP_DNS=1
 SKIP_DNAT=1
 SKIP_TCPDUMP=1
-CATCHER_HTTP_PORT=80
-CATCHER_HTTPS_PORT=443
+CATCHER_HTTP_PORT=8080
+CATCHER_HTTPS_PORT=8443
 ```
+
+Le catcher annonce alors `http://IP:8080/...` dans GetGeo. Ouvre le firewall
+sur **8080** et **8443** (pas besoin de toucher Apache).
 
 ### Lancer à la main
 
@@ -85,20 +88,22 @@ sudo journalctl -u waze-catcher -f
 ### Firewall
 
 ```bash
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
+sudo ufw allow 8080/tcp
+sudo ufw allow 8443/tcp
 sudo ufw reload
 ```
 
-### TLS (optionnel)
+### Tweak / .deb (IP + port)
 
-Le client Waze 2.4 utilise surtout **HTTP** vers l’IP. Si besoin d’HTTPS :
+Le `.deb` **n’est pas** dans git (artefact local). À construire avec la même
+IP **et** le port HTTP :
 
 ```bash
-# .env déjà chargé avec WAZE_SERVER_IP
-sh scripts/regen-tls-san.sh
-sudo systemctl restart waze-catcher
+sh tweak/build-deb.sh 203.0.113.50:8080 1.0.0
+sh cydia/make-repo.sh
 ```
+
+Sans `:8080` dans le `.deb`, l’iPhone parlerait encore au port 80 (Apache).
 
 ---
 

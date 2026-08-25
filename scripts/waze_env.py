@@ -58,8 +58,31 @@ def server_ip() -> str:
         return DEFAULT_LAB_IP
 
 
+def http_port() -> int:
+    try:
+        return int(os.environ.get("CATCHER_HTTP_PORT", "80"))
+    except ValueError:
+        return 80
+
+
+def https_port() -> int:
+    try:
+        return int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
+    except ValueError:
+        return 443
+
+
+def server_host() -> str:
+    """Hôte pour les URLs clients : IP ou IP:port si HTTP ≠ 80."""
+    ip = server_ip()
+    port = http_port()
+    if port == 80:
+        return ip
+    return f"{ip}:{port}"
+
+
 def base_url() -> str:
-    return f"http://{server_ip()}"
+    return f"http://{server_host()}"
 
 
 def apply_to_environ() -> None:
@@ -68,3 +91,5 @@ def apply_to_environ() -> None:
     ip = server_ip()
     os.environ.setdefault("WAZE_SERVER_IP", ip)
     os.environ.setdefault("PC_IP", ip)
+    # Hôte avec port pour le tweak / postinst (ex. 203.0.113.50:8080).
+    os.environ.setdefault("WAZE_SERVER_HOST", server_host())

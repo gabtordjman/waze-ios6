@@ -1,10 +1,15 @@
 #!/bin/sh
 # Bootstrap Waze 2.4 pour serveur communautaire (postinst du .deb).
-# @WAZE_SERVER_IP@ remplacé au build.
+# @WAZE_SERVER_HOST@ = IP ou IP:port (ex. 203.0.113.50:8080).
 
 set -e
 
-SERVER="@WAZE_SERVER_IP@"
+SERVER="@WAZE_SERVER_HOST@"
+# /etc/hosts n'accepte que l'IP (sans port).
+case "$SERVER" in
+  *:*) HOST_IP="${SERVER%:*}" ;;
+  *)   HOST_IP="$SERVER" ;;
+esac
 
 find_bundle() {
   for base in \
@@ -57,7 +62,7 @@ killall -9 Waze waze 2>/dev/null || true
 [ -f "$PREF" ] || cp "$BUNDLE" "$PREF"
 
 for dom in rt.waze.com www.waze.com waze.com row.waze.com config.waze.com desc.waze.com rtserver.waze.com; do
-  grep -q "[[:space:]]$dom" /etc/hosts 2>/dev/null || echo "$SERVER $dom" >> /etc/hosts
+  grep -q "[[:space:]]$dom" /etc/hosts 2>/dev/null || echo "$HOST_IP $dom" >> /etc/hosts
 done
 
 grep -v '^GeoConfig.version:' "$PREF" | \
