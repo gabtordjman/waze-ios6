@@ -1,5 +1,5 @@
 Geo-Location.Enabled: yes
-Editor.Gray scale: yes
+Editor.Gray scale: no
 Style.Use Pretty Lines: yes
 Shapes.Declutter: 1300
 Polygons.Declutter: 1300
@@ -108,3 +108,43 @@ Alerts.Alert Distance: 400
 TTS.Feature Enabled: no
 Navigation.Navigation guidance on: yes
 Navigation.Navigation guidance enabled: yes
+Navigation.Navigation guidance type: Minimal
+Navigation.Guidance type default: Minimal
+Prompts.Name: eng
+Display.Auto night mode: no
+Display.Map sub_skin: day
+Map.Background: #EFEBE3
+Map.Labels: yes
+Navigation.RouteColor: #9933FF
+Streets.Thickness: 4
+Streets.Color: #8EB8D8
+Streets.Delta1: 2
+Streets.Color1: #FFFFFF
+Streets.LabelColor: #222222
+Secondary.Thickness: 5
+Secondary.Color: #9AABB8
+Secondary.Delta1: 3
+Secondary.Color1: #E8E8E8
+Secondary.LabelColor: #222222
+Primary.Thickness: 7
+Primary.Color: #A0A8B0
+Primary.Delta1: 4
+Primary.Color1: #D4D4D4
+Primary.LabelColor: #222222
+Freeways.Thickness: 9
+Freeways.Color: #B0B0B0
+Freeways.Delta1: 6
+Freeways.Color1: #C8C8C8
+Freeways.LabelColor: #222222
+Highways.Thickness: 6
+Highways.Color: #A8B0B8
+Highways.Delta1: 4
+Highways.Color1: #D8D8D8
+Ramps.Thickness: 4
+Ramps.Color: #9BB8C8
+Ramps.Delta1: 2
+Ramps.Color1: #FFFFFF
+Exit.Thickness: 4
+Exit.Color: #9BB8C8
+Exit.Delta1: 2
+Exit.Color1: #FFFFFF

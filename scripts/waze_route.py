@@ -8,6 +8,10 @@ GPL navigate_main_screen_repaint() (navigate_main.c) :
 instrument_segments() refuse line_id < 0. Les stubs -1 n'affichent donc
 rien de près. Il faut les vrais (tile_id, line_id, timestamp) du .wzm
 96e7e67 (polylignes + shapes). On ne touche pas au générateur de cartes.
+
+Pas de ponts « fill » entre lignes : un segment dans une autre tuile avant
+que le précédent soit instrumenté bloque tout l'overlay violet (GPL).
+Les manœuvres OSRM sont posées par distance le long du trajet, pas par snap.
 """
 
 from __future__ import annotations
@@ -215,6 +219,43 @@ def _name_near(lon: int, lat: int, names: list[tuple[int, int, str]]) -> str:
     return best if best_d < 120_000 else ""
 
 
+_wzm_diag_cache: tuple[tuple, str] | None = None
+
+
+def wzm_status_line(lon: float | None = None, lat: float | None = None) -> str:
+    """Une ligne pour le catcher : taille, rues échelle 0, tuile GPS."""
+    global _wzm_diag_cache
+    if not WZM.is_file():
+        return f"  wzm ABSENT {WZM}"
+    mtime = WZM.stat().st_mtime
+    key = (mtime, lon, lat)
+    if _wzm_diag_cache and _wzm_diag_cache[0] == key:
+        return _wzm_diag_cache[1]
+    try:
+        from wazemap import summarize_wzm  # type: ignore
+
+        s = summarize_wzm(WZM, lon, lat)
+    except Exception as e:
+        msg = f"  wzm {WZM.name} inspect FAIL {type(e).__name__}: {e}"
+        _wzm_diag_cache = (key, msg)
+        return msg
+    s0 = s["scales"][0]
+    msg = (
+        f"  wzm {WZM.name} {s['size'] // 1024}K "
+        f"s0={s0['lines']} lignes/{s0['with_lines']} tuiles "
+        f"vide={s0['empty']}"
+    )
+    if s["gps_tid"] is not None:
+        if not s["gps_inside"]:
+            msg += f" GPS hors bbox tuile={s['gps_tid']}"
+        else:
+            msg += f" GPS tuile {s['gps_tid']}={s['gps_lines']} ligne(s)"
+    if s0["lines"] == 0:
+        msg += " — ÉCHELLE 0 VIDE (écran néant au zoom rue)"
+    _wzm_diag_cache = (key, msg)
+    return msg
+
+
 def _load_line_index(
     *,
     bbox: tuple[int, int, int, int] | None = None,
@@ -296,6 +337,12 @@ def _load_line_index(
             )
 
     _lines_cache = (cache_key, out)
+    if not out:
+        print(
+            f"  matcher index vide (wzm={'oui' if WZM.is_file() else 'non'} "
+            f"{WZM.stat().st_size if WZM.is_file() else 0}B, bbox={bbox})",
+            flush=True,
+        )
     return out
 
 
@@ -335,7 +382,11 @@ def _min_end_gap(a: tuple, b: tuple) -> int:
 
 
 def _fill_line_gaps(raw: list[tuple], index: list[tuple]) -> list[tuple]:
-    """Insère une ligne .wzm seulement si elle relie vraiment prev et next."""
+    """Insère une ligne .wzm seulement si elle relie vraiment prev et next.
+
+    Ne plus appeler depuis le matcher : un pont dans une autre tuile bloque
+    instrument_segments() (le précédent doit être instrumenté d'abord).
+    """
     connect = 4_000
     if len(raw) < 2:
         return raw
@@ -368,6 +419,21 @@ def _fill_line_gaps(raw: list[tuple], index: list[tuple]) -> list[tuple]:
             hops += 1
         out.append(nxt)
     return out
+
+
+def _downsample_lines(raw: list[tuple], max_n: int = 120) -> list[tuple]:
+    """Garde début + fin. Trop de tuiles distinctes bloque l'overlay GPL."""
+    if len(raw) <= max_n:
+        return raw
+    keep = [raw[0]]
+    step = (len(raw) - 1) / (max_n - 1)
+    for k in range(1, max_n - 1):
+        row = raw[int(round(k * step))]
+        if row[:2] != keep[-1][:2]:
+            keep.append(row)
+    if raw[-1][:2] != keep[-1][:2]:
+        keep.append(raw[-1])
+    return keep
 
 
 def _turn_instr(b1: float, b2: float, *, name_change: bool = False) -> int:
@@ -467,6 +533,28 @@ def _match_segments(
             raw.append(hit)
         prev = hit
 
+    if not raw:
+        for i, (lon, lat) in enumerate(pts):
+            if i + 1 < len(pts):
+                seg_a, seg_b = pts[i], pts[i + 1]
+            elif i > 0:
+                seg_a, seg_b = pts[i - 1], pts[i]
+            else:
+                continue
+            best = None
+            best_d = 10**18
+            for row in candidates(lon, lat):
+                d = _dist_to_seg(row[3], row[4], seg_a, seg_b)
+                if d < best_d:
+                    best_d = d
+                    best = row
+            if best is None or best_d > 120_000:
+                continue
+            if not raw or raw[-1][:2] != best[:2]:
+                raw.append(best)
+        if raw:
+            print(f"  matcher 2e passe: {len(raw)} lignes", flush=True)
+
     i = 1
     while i < len(raw) - 1:
         if raw[i - 1][:2] == raw[i + 1][:2] and raw[i][:2] != raw[i - 1][:2]:
@@ -477,7 +565,7 @@ def _match_segments(
     if not raw:
         return []
 
-    raw = _fill_line_gaps(raw, index)
+    raw = _downsample_lines(raw)
     if not raw:
         return []
 
@@ -539,22 +627,41 @@ def _match_segments(
 
 
 def _apply_osrm_steps(segs: list[dict], steps: list[dict]) -> None:
-    """Les manœuvres OSRM priment sur le CONTINUE du matcher .wzm."""
+    """Place chaque manœuvre OSRM sur le segment .wzm à la même fraction du trajet.
+
+    Un snap GPS (seuil 80 mµ°) ratait presque tout → un seul groupe CONTINUE
+    jusqu'à APPROACHING_DESTINATION (« Continue 4468ft approaching destination »).
+    """
     if not segs or not steps:
         return
+    cum: list[int] = []
+    total = 0
+    for s in segs:
+        total += max(int(s.get("len") or 1), 1)
+        cum.append(total)
+    osrm_total = sum(max(int(st.get("dist") or 0), 1) for st in steps) or 1
+    walked = 0
+    used: set[int] = set()
+    last_i = len(segs) - 1
     for step in steps:
+        walked += max(int(step.get("dist") or 0), 1)
         instr = step["instr"]
-        if instr == CONTINUE:
+        if instr in (CONTINUE, APPROACHING_DESTINATION):
             continue
+        target = walked / osrm_total * total
         best_i, best_d = None, 10**18
-        for i, s in enumerate(segs):
-            d = abs(s["mlon"] - step["lon"]) + abs(s["mlat"] - step["lat"])
+        # Le dernier segment reste APPROACHING_DESTINATION (barre + Arrive).
+        for i in range(max(last_i, 1)):
+            if i in used or i == last_i:
+                continue
+            d = abs(cum[i] - target)
             if d < best_d:
                 best_d, best_i = d, i
-        if best_i is None or best_d > 80_000:
+        if best_i is None:
             continue
+        used.add(best_i)
         segs[best_i]["instr"] = instr
-        if step["name"]:
+        if step.get("name"):
             segs[best_i]["dest_name"] = step["name"]
     segs[-1]["instr"] = APPROACHING_DESTINATION
 
@@ -582,7 +689,7 @@ def _segments_from_steps(
             d = abs(row[3] - st["lon"]) + abs(row[4] - st["lat"])
             if d < best:
                 best, hit = d, row
-        if hit is None or best > 80_000:
+        if hit is None or best > 200_000:
             continue
         tid, li, ts, mlon, mlat, alen, elon, elat = hit[:8]
         if i == len(steps) - 1:
@@ -707,6 +814,7 @@ def routing_body(
 
     pts, length, duration, steps = got
     alt_id = 1
+    print(wzm_status_line(lon1, lat1), flush=True)
     try:
         matched = _match_segments(pts, length, duration)
     except Exception as e:
@@ -722,7 +830,23 @@ def routing_body(
     if matched and dest:
         matched[-1]["dest_name"] = dest
 
-    nseg = len(matched) if matched else 2
+    n_turns = sum(
+        1
+        for s in matched
+        if s.get("instr") not in (CONTINUE, APPROACHING_DESTINATION)
+    )
+    print(
+        f"  route segs={len(matched)} turns={n_turns} via={via!r} dest={dest!r}",
+        flush=True,
+    )
+    if not matched:
+        print(
+            "  pas de RouteSegments (line_id=-1 interdit : overlay mort + "
+            "Continue approaching destination)",
+            flush=True,
+        )
+
+    nseg = len(matched)
     rows = [
         "RC,200,OK",
         f"RoutingResponseCode,{route_id},1,200,OK",
@@ -734,18 +858,6 @@ def routing_body(
     ]
     if matched:
         rows.extend(_route_segment_rows(route_id, alt_id, matched))
-    else:
-        from wazemap import tile_id  # type: ignore
-
-        tid = tile_id(int(lon1 * 1e6), int(lat1 * 1e6), 0)
-        half_len = max(length // 2, 1)
-        half_dur = max(duration // 2, 1)
-        rows.append(
-            f"RouteSegments,{route_id},{alt_id},{tid},1,12,"
-            f"0,-1,{half_len},{half_dur},{_wire(CONTINUE)},0,"
-            f"0,-1,{half_len},{half_dur},{_wire(APPROACHING_DESTINATION)},0,"
-            f","
-        )
     return ("\r\n".join(rows) + "\r\n").encode("ascii")
 
 

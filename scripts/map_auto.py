@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 """Carte OSM automatique autour de la position GPS du téléphone.
 
-Le catcher appelle `schedule_build(lon, lat)` sur At / Location /
-GetGeoServerConfig (pas MapDisplayed). La carte sort dans `maps/auto/`.
+Le catcher appelle `schedule_build(lon, lat)` sur At / Location
+(pas MapDisplayed). La carte sort dans `maps/auto/`.
 
-Détail (~4 km) aux échelles 0–1 ; axes majeurs (~40 km) aux échelles 2–5
-pour que le dézoom montre encore quelque chose.
+Détail (~4 km) aux échelles 0–1. Le dézoom réutilise les axes du détail :
+une bbox 40 km Overpass 504 presque toujours et bloquait toute la génération.
 
 Usage :
-    python3 scripts/map_auto.py build --lon 6.4847 --lat 46.3646
-    python3 scripts/map_auto.py ensure --from-log   # relit logs/rts-catcher.txt
+    python3 scripts/map_auto.py build --lon 6.4847 --lat 46.3646 --force
+    python3 scripts/map_auto.py build --lon 6.4847 --lat 46.3646 --refresh-osm
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import subprocess
 import sys
@@ -31,8 +30,8 @@ REGION = "auto"
 
 # ~4 km : détail (échelles 0–1).
 HALF_DEG = 0.04
-# ~40 km : axes majeurs pour le dézoom (échelles 2–5).
-HALF_WIDE_DEG = 0.35
+# ~8 km : axes du dézoom. 0,35° (~40 km) faisait 504 Overpass à tous les coups.
+HALF_WIDE_DEG = 0.08
 # 0..5 : toutes les échelles demandées au dézoom (s2–s5 dans MapDisplayed).
 MAX_SCALE = 5
 WIDE_MIN_SCALE = 2
@@ -92,7 +91,9 @@ def wide_bbox_for(lon: float, lat: float) -> tuple[float, float, float, float]:
     )
 
 
-def build_sync(lon: float, lat: float, *, force: bool = False) -> int:
+def build_sync(
+    lon: float, lat: float, *, force: bool = False, refresh_osm: bool = False
+) -> int:
     """Construit maps/auto/ si nécessaire. Retourne 0 si OK ou déjà à jour."""
     if not coords_sane(lon, lat):
         print(f"GPS ignoré (fix invalide) : {lon:.6f},{lat:.6f}", file=sys.stderr)
@@ -110,22 +111,26 @@ def build_sync(lon: float, lat: float, *, force: bool = False) -> int:
     wide = f"{ww:.6f},{ws:.6f},{we:.6f},{wn:.6f}"
     print(f"Génération OSM → maps/{REGION}/  détail {bbox}  large {wide}")
 
-    # --bbox=… évite qu'argparse interprète -0.12… comme une option.
-    proc = subprocess.run(
-        [
-            sys.executable,
-            str(WAZEMAP),
-            "build",
-            f"--bbox={bbox}",
-            f"--wide-bbox={wide}",
-            f"--wide-min-scale={WIDE_MIN_SCALE}",
-            "--name",
-            REGION,
-            "--max-scale",
-            str(MAX_SCALE),
-        ],
-        cwd=str(ROOT),
-    )
+    osm_cache = ROOT / "logs" / f"osm-{REGION}.json"
+    cmd = [
+        sys.executable,
+        str(WAZEMAP),
+        "build",
+        f"--bbox={bbox}",
+        f"--wide-bbox={wide}",
+        f"--wide-min-scale={WIDE_MIN_SCALE}",
+        "--name",
+        REGION,
+        "--max-scale",
+        str(MAX_SCALE),
+    ]
+    # --force réécrit le .wzm. Le JSON détail déjà téléchargé se réutilise
+    # (évite de re-attendre Overpass). --refresh-osm pour re-télécharger.
+    if osm_cache.is_file() and not refresh_osm:
+        print(f"détail depuis le cache {osm_cache}")
+        cmd.extend(["--osm", str(osm_cache)])
+
+    proc = subprocess.run(cmd, cwd=str(ROOT))
     if proc.returncode != 0:
         return proc.returncode
 
@@ -171,11 +176,11 @@ def coords_from_log() -> tuple[float, float] | None:
     text = LOG.read_text(encoding="utf-8", errors="replace")
     # Préférer un GPS At/Location, pas le centre MapDisplayed.
     for pat in (
+        r"GPS ([-\d.]+),([-\d.]+)",
         r"At,([-\d.]+),([-\d.]+),",
         r"Location,([-\d.]+),([-\d.]+)",
         r"GetGeoServerConfig,\d+,([-\d.]+),([-\d.]+)",
         r"carte OSM auto programmée pour ([-\d.]+),([-\d.]+)",
-        r"centre\s+([-\d.]+),([-\d.]+)",
     ):
         hits = re.findall(pat, text)
         if hits:
@@ -185,7 +190,9 @@ def coords_from_log() -> tuple[float, float] | None:
 
 
 def cmd_build(args) -> int:
-    return build_sync(args.lon, args.lat, force=args.force)
+    return build_sync(
+        args.lon, args.lat, force=args.force, refresh_osm=args.refresh_osm
+    )
 
 
 def cmd_ensure(args) -> int:
@@ -201,7 +208,9 @@ def cmd_ensure(args) -> int:
     else:
         print("Indique --lon/--lat ou --from-log", file=sys.stderr)
         return 1
-    return build_sync(lon, lat, force=args.force)
+    return build_sync(
+        lon, lat, force=args.force, refresh_osm=args.refresh_osm
+    )
 
 
 def main() -> int:
@@ -212,6 +221,11 @@ def main() -> int:
     b.add_argument("--lon", type=float, required=True)
     b.add_argument("--lat", type=float, required=True)
     b.add_argument("--force", action="store_true")
+    b.add_argument(
+        "--refresh-osm",
+        action="store_true",
+        help="retélécharge Overpass même si logs/osm-auto.json existe",
+    )
     b.set_defaults(func=cmd_build)
 
     e = sub.add_parser("ensure", help="génère si absent ou position changée")
@@ -219,6 +233,7 @@ def main() -> int:
     e.add_argument("--lat", type=float)
     e.add_argument("--from-log", action="store_true")
     e.add_argument("--force", action="store_true")
+    e.add_argument("--refresh-osm", action="store_true")
     e.set_defaults(func=cmd_ensure)
 
     args = parser.parse_args()

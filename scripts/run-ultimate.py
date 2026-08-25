@@ -96,6 +96,9 @@ _ensure_port(http_port)
 _ensure_port(https_port)
 
 if DNS_SCRIPT.is_file() and os.environ.get("SKIP_DNS") != "1":
+    raw = DNS_SCRIPT.read_bytes()
+    if b"\r" in raw:
+        DNS_SCRIPT.write_bytes(raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
     subprocess.run(["sh", str(DNS_SCRIPT)], check=False, cwd=str(ROOT))
 
 dnat_ok = False

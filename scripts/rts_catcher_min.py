@@ -65,7 +65,7 @@ except ImportError:
     def _note_tile_served(kind: str = "wzm") -> None:
         pass
 
-CATCHER_REV = "proto150-route-20260825u"
+CATCHER_REV = "proto150-route-20260825y"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -117,7 +117,12 @@ except ImportError:
 
 _ROUTE_IMPORT_ERR = ""
 try:
-    from waze_route import dest_label_from_request, parse_routing_request, routing_body
+    from waze_route import (
+        dest_label_from_request,
+        parse_routing_request,
+        routing_body,
+        wzm_status_line,
+    )
 except Exception as e:
     _ROUTE_IMPORT_ERR = f"{type(e).__name__}: {e}"
 
@@ -129,6 +134,9 @@ except Exception as e:
 
     def routing_body(*_a, **_k) -> bytes:
         return b"RC,500,Service unavailable\r\n"
+
+    def wzm_status_line(*_a, **_k) -> str:
+        return "  wzm (waze_route import FAIL)"
 
 REGISTER_OK = "RegisterSuccessful,ios6user,ios6pass"
 
@@ -236,8 +244,10 @@ def _maybe_build_map(req_body: bytes) -> None:
     if not coords_sane(lon, lat):
         _log(f"  GPS ignoré (fix invalide {lon:.6f},{lat:.6f})")
         return
-    # Ne pas régénérer maps/auto au login : ça écrasait la carte qui s'affichait.
-    _log(f"  GPS {lon:.6f},{lat:.6f} (carte figée — sh maps.sh auto)")
+    # Carte OSM en fond : seulement si GPS réel et déplacement suffisant.
+    # Un 504 Overpass n'annule plus le détail déjà reçu.
+    _log(f"  GPS {lon:.6f},{lat:.6f} — carte OSM auto si besoin")
+    _schedule_map_build(lon, lat)
 
 
 def _client_proto(req_body: bytes) -> tuple[int, bool]:
@@ -434,7 +444,9 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("TTS", "Feature Enabled", "no"),
         ("Navigation", "Navigation guidance on", "yes"),
         ("Navigation", "Navigation guidance enabled", "yes"),
-        ("Navigation", "Navigation guidance default", "Minimal"),
+        ("Navigation", "Guidance type default", "Minimal"),
+        ("Navigation", "Navigation guidance type", "Minimal"),
+        ("Prompts", "Name", "eng"),
         ("Download", "Source", f"{BASE}/maps"),
         ("Map", "Static County", str(WORLD_FIPS)),
         ("Download", "Enabled", "no"),
@@ -999,8 +1011,9 @@ def main() -> None:
     _log("Succès = ★★★ LOGIN ACCEPTÉ (le client envoie At/SeeMe).")
     _log("Remise à zéro du balayage: rm logs/login-variant.txt")
     _log(f"Carte annoncée: Map.Static County={WORLD_FIPS}.")
-    _log("  Carte = Léman local (maps/auto). Pas d'expansion Overpass au pan/route.")
+    _log("  Carte = maps/auto (figée). Pas d'expansion Overpass au pan/route.")
     _log("  Nav = segments wzm (zoom rue) + RoutePoints OSRM (dézoom). Tuiles = wzm only.")
+    _log(wzm_status_line())
 
     http_sock = _bind_listen(http_port)
     https_sock = _bind_listen(https_port)

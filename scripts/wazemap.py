@@ -100,6 +100,8 @@ ROAD_WALKWAY = 11
 CATEGORY_RANGE = 20
 DIRECTION_COUNT = 4
 
+RANGE_STREET_ONLY = 0x8000  # roadmap_db_range.h : line.range → street id
+
 NO_SHAPES = 0xFFFF
 NO_RANGE = 0xFFFF
 
@@ -162,6 +164,17 @@ OSM_CATEGORY = {
     "track": ROAD_4X4,
     "cycleway": ROAD_WALKWAY,
 }
+
+
+def _ascii_name(s: str) -> str:
+    if not s:
+        return ""
+    repl = str.maketrans(
+        "àáâãäåèéêëìíîïòóôõöùúûüýÿñçÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜÝŸÑÇ",
+        "aaaaaaeeeeiiiiooooouuuuyyncAAAAAAEEEEIIIIOOOOOUUUUYYNC",
+    )
+    out = s.translate(repl).encode("ascii", "ignore").decode("ascii")
+    return out.replace(",", " ").strip()[:80]
 
 
 # ── Géométrie des tuiles (roadmap_tile.c) ────────────────────────────────────
@@ -295,8 +308,8 @@ class TileBuilder:
         self.west, self.east, self.south, self.north, self.scale = tile_edges(tid)
         self.factor = scale_factor(self.scale)
         self._points: dict[tuple[int, int], int] = {}
-        # (catégorie, from_idx, to_idx, middles_dxdy)
-        self._lines: list[tuple[int, int, int, list[tuple[int, int]]]] = []
+        # (catégorie, from_idx, to_idx, middles_dxdy, nom)
+        self._lines: list[tuple[int, int, int, list[tuple[int, int]], str]] = []
         self.overflow = False
 
     def _offset(self, lon_u: int, lat_u: int) -> tuple[int, int]:
@@ -322,6 +335,7 @@ class TileBuilder:
         coords: list[tuple[int, int]],
         from_cut: bool = False,
         to_cut: bool = False,
+        name: str = "",
     ) -> None:
         """Ajoute une polyligne continue (coords en micro-degrés, dans la tuile)."""
         if len(coords) < 2:
@@ -351,7 +365,7 @@ class TileBuilder:
             i |= POINT_FAKE_FLAG
         if to_cut:
             j |= POINT_FAKE_FLAG
-        self._lines.append((category, i, j, cleaned[1:-1]))
+        self._lines.append((category, i, j, cleaned[1:-1], name or ""))
 
     def add_segment(
         self,
@@ -361,7 +375,7 @@ class TileBuilder:
         a_cut: bool = False,
         b_cut: bool = False,
     ) -> None:
-        self.add_polyline(category, [a, b], a_cut, b_cut)
+        self.add_polyline(category, [a, b], a_cut, b_cut, name="")
 
     def __len__(self) -> int:
         return len(self._lines)
@@ -378,16 +392,40 @@ class TileBuilder:
         point_data = b"".join(struct.pack("<HH", dx, dy) for (dx, dy), _ in pts)
         point_id_data = b"".join(struct.pack("<i", idx) for _, idx in pts)
 
+        # Dictionnaire : offset 0 = chaîne vide (RoadMapString). Les noms
+        # sont des offsets dans le blob — roadmap_dictionary_get = data+index.
+        street_blob = bytearray(b"\0")
+        name_to_sid: dict[str, int] = {"": 0}
+        street_offs = [0]
+
+        def intern_name(raw: str) -> int:
+            name = _ascii_name(raw)
+            if not name:
+                return 0
+            sid = name_to_sid.get(name)
+            if sid is not None:
+                return sid
+            if len(street_blob) + len(name) + 1 > 60_000 or len(street_offs) >= 2000:
+                return 0
+            off = len(street_blob)
+            street_blob.extend(name.encode("ascii") + b"\0")
+            sid = len(street_offs)
+            street_offs.append(off)
+            name_to_sid[name] = sid
+            return sid
+
         shape_data = bytearray()
         shape_i = 0
         line_recs: list[tuple[int, int, int, int]] = []  # from, to, first_shape, range
 
-        for _cat, frm, to, middles in lines:
+        for _cat, frm, to, middles, raw_name in lines:
+            sid = intern_name(raw_name)
+            rng = RANGE_STREET_ONLY | sid if sid else NO_RANGE
             if not middles:
-                line_recs.append((frm, to, NO_SHAPES, NO_RANGE))
+                line_recs.append((frm, to, NO_SHAPES, rng))
                 continue
             if shape_i + 1 + len(middles) > MAX_SHAPES_PER_TILE:
-                line_recs.append((frm, to, NO_SHAPES, NO_RANGE))
+                line_recs.append((frm, to, NO_SHAPES, rng))
                 continue
             # En-tête : delta_latitude = nombre de sommets intermédiaires.
             first_shape = shape_i
@@ -403,14 +441,14 @@ class TileBuilder:
                 shape_data += struct.pack("<hh", dlon, dlat)
                 prev = mid
                 shape_i += 1
-            line_recs.append((frm, to, first_shape, NO_RANGE))
+            line_recs.append((frm, to, first_shape, rng))
 
         line_data = b"".join(
             struct.pack("<HHHH", frm, to, fs, rg) for frm, to, fs, rg in line_recs
         )
 
         counts = [0] * (CATEGORY_RANGE + 1)
-        for cat, _, _, _ in lines:
+        for cat, _, _, _, _ in lines:
             counts[cat] += 1
         cumulative, total = [], 0
         for c in counts:
@@ -425,7 +463,9 @@ class TileBuilder:
         square = struct.pack("<iiI", self.tid, self.scale, timestamp)
 
         empty_str = b"\0"
-        street_name = struct.pack("<5H", 0, 0, 0, 0, 0)
+        street_name = b"".join(
+            struct.pack("<5H", 0, off, 0, 0, 0) for off in street_offs
+        )
         street_city = struct.pack("<HH", 0, 0)
         route_flags = 0x01
         line_route = b"".join(
@@ -434,7 +474,7 @@ class TileBuilder:
 
         sections = {
             S_STRING_PREFIX: empty_str,
-            S_STRING_STREET: empty_str,
+            S_STRING_STREET: bytes(street_blob),
             S_STRING_T2S: empty_str,
             S_STRING_TYPE: empty_str,
             S_STRING_SUFFIX: empty_str,
@@ -494,53 +534,79 @@ def split_by_tile(a: tuple[int, int], b: tuple[int, int], scale: int):
 
 # ── Chargement OSM ───────────────────────────────────────────────────────────
 # L'instance principale d'Overpass est souvent saturée et rend 504 sans avoir
-# rien calculé. Les miroirs servent exactement la même API.
+# rien calculé. Les miroirs servent exactement la même API. overpass-api.de
+# en dernier : c'est lui qui 504 le plus souvent.
 OVERPASS_MIRRORS = [
-    "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.osm.ch/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
 ]
+
+WIDE_HIGHWAYS = "motorway|trunk|primary"
+MAJOR_CATEGORIES = {ROAD_FREEWAY, ROAD_PRIMARY, ROAD_SECONDARY, ROAD_RAMP}
 
 
 def fetch_overpass(
     bbox: tuple[float, float, float, float],
     *,
     highways: str | None = None,
+    timeout: int = 60,
+    attempts: int = 1,
+    required: bool = True,
+    max_hosts: int | None = None,
 ) -> list[dict]:
     west, south, east, north = bbox
     if highways:
         filt = f'way["highway"~"^({highways})(_link)?$"]({south},{west},{north},{east});'
     else:
         filt = f'way["highway"]({south},{west},{north},{east});'
-    query = f"[out:json][timeout:180];{filt}out geom;"
+    query = f"[out:json][timeout:{max(timeout - 5, 20)}];{filt}out geom;"
     payload = query.encode("utf-8")
     last = ""
 
-    for attempt in range(2):
-        for url in OVERPASS_MIRRORS:
+    for attempt in range(max(attempts, 1)):
+        hosts = OVERPASS_MIRRORS[:max_hosts] if max_hosts else OVERPASS_MIRRORS
+        for url in hosts:
             host = url.split("/")[2]
             try:
                 req = urllib.request.Request(
                     url, data=payload, headers={"User-Agent": "waze-ios6-map/1.0"}
                 )
-                with urllib.request.urlopen(req, timeout=300) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     body = resp.read().decode("utf-8")
                 print(f"  {host} : {len(body) / 1024:.0f} Kio reçus")
                 return json.loads(body).get("elements", [])
             except Exception as exc:  # 504, coupure, JSON tronqué…
                 last = f"{host} : {exc}"
                 print(f"  {last}", file=sys.stderr)
-        if attempt == 0:
-            print("  tous les miroirs ont refusé, nouvelle tentative dans 20 s…",
-                  file=sys.stderr)
-            time.sleep(20)
+        if attempt + 1 < attempts:
+            print("  nouvelle tentative dans 8 s…", file=sys.stderr)
+            time.sleep(8)
 
-    raise RuntimeError(
+    msg = (
         f"Overpass indisponible ({last}).\n"
-        "Réduis la zone (une bbox de 0,3° est déjà grande), réessaie plus tard,\n"
-        "ou télécharge toi-même le JSON et repasse-le avec --osm."
+        "Réduis la zone, réessaie plus tard, ou passe --osm avec un JSON déjà téléchargé."
     )
+    if required:
+        raise RuntimeError(msg)
+    print(f"  {msg.splitlines()[0]} — on continue sans ça.", file=sys.stderr)
+    return []
+
+
+def load_osm_cache(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("elements", [])
+    except Exception as exc:
+        print(f"  cache OSM illisible ({path}: {exc})", file=sys.stderr)
+        return []
+
+
+def major_ways(ways: list) -> list:
+    """Axes assez larges pour le dézoom, extraits du détail (sans 2e Overpass)."""
+    return [w for w in ways if w[0] in MAJOR_CATEGORIES]
 
 
 def ways_from_elements(elements: list[dict]):
@@ -555,7 +621,8 @@ def ways_from_elements(elements: list[dict]):
             if g and g.get("lon") is not None and g.get("lat") is not None
         ]
         if len(coords) >= 2:
-            yield category, coords
+            name = el.get("tags", {}).get("name") or el.get("tags", {}).get("name:fr") or ""
+            yield category, coords, name
 
 
 # ── Assemblage ───────────────────────────────────────────────────────────────
@@ -593,7 +660,12 @@ def clip_way_to_tiles(coords: list[tuple[int, int]], scale: int):
 
 def build_tiles(ways, scales: list[int]) -> dict[int, TileBuilder]:
     tiles: dict[int, TileBuilder] = {}
-    for category, coords in ways:
+    for item in ways:
+        if len(item) == 3:
+            category, coords, name = item
+        else:
+            category, coords = item[0], item[1]
+            name = ""
         for scale in scales:
             if category > max_category(scale):
                 continue
@@ -606,7 +678,9 @@ def build_tiles(ways, scales: list[int]) -> dict[int, TileBuilder]:
                     head, tail = pts[0], pts[-1]
                     mid = pts[1:-1:step]
                     pts = [head, *mid, tail]
-                builder.add_polyline(category, pts, from_cut, to_cut)
+                # Noms seulement à l'échelle rue (labels 2011).
+                label = name if scale == 0 else ""
+                builder.add_polyline(category, pts, from_cut, to_cut, name=label)
 
     saturated = [tid for tid, b in tiles.items() if b.overflow]
     if saturated:
@@ -846,6 +920,20 @@ def cmd_selftest() -> int:
     assert square[0] == got and square[1] == 0
     print(f"  {len(lines)//8} lignes, {len(points)//4} points, {len(blob)} octets  OK")
 
+    print("Noms de rues (dictionnaire offset + RANGE_STREET_ONLY)")
+    named = TileBuilder(got)
+    named.add_polyline(
+        ROAD_STREET,
+        [(base_lon, base_lat), (base_lon + 500, base_lat + 200)],
+        name="Howard St",
+    )
+    nparsed = read_tile(pack_tile(named.payload(1)))
+    assert b"Howard St\0" in nparsed["sections"][S_STRING_STREET]
+    assert len(nparsed["sections"][S_STREET_NAME]) == 20
+    _frm, _to, _fs, rg = struct.unpack("<HHHH", nparsed["sections"][S_LINE_DATA][:8])
+    assert rg == RANGE_STREET_ONLY | 1, rg
+    print("  Howard St → street 1, range 0x8001  OK")
+
     print("Contrôle de l'index cumulatif par catégorie")
     bysquare = parsed["sections"][S_LINE_BYSQUARE1]
     assert len(bysquare) == (CATEGORY_RANGE + 1) * 2 + 2 + (DIRECTION_COUNT * 2 + 1) * 2
@@ -906,6 +994,106 @@ def cmd_selftest() -> int:
     return 0
 
 
+def summarize_wzm(
+    path: Path,
+    lon: float | None = None,
+    lat: float | None = None,
+) -> dict:
+    """Compte les rues par échelle. Zoom rue = échelle 0 ; le reste est du dézoom."""
+    info = read_wzm(path)
+    blob = path.read_bytes()
+    scales = [
+        {"tiles": 0, "with_lines": 0, "empty": 0, "lines": 0}
+        for _ in TILE_SCALES
+    ]
+    gps_tid = None
+    gps_lines: int | None = None
+    gps_inside: bool | None = None
+    if lon is not None and lat is not None:
+        lon_u = int(round(lon * 1e6))
+        lat_u = int(round(lat * 1e6))
+        gps_tid = tile_id(lon_u, lat_u, 0)
+        west, south, east, north = info["bbox"]
+        gps_inside = west <= lon_u < east and south <= lat_u < north
+
+    for tid, off, csz, raw_size in info["entries"]:
+        _, _, _, _, scale = tile_edges(tid)
+        if scale >= len(scales):
+            continue
+        scales[scale]["tiles"] += 1
+        header = (
+            DATA_SIGNATURE
+            + struct.pack("<IIII", ENDIAN_CORRECT, DATA_VERSION, csz, raw_size)
+        )
+        try:
+            parsed = read_tile(header + blob[off : off + csz])
+        except Exception:
+            scales[scale]["empty"] += 1
+            continue
+        n_lines = len(parsed["sections"].get(S_LINE_DATA, b"")) // 8
+        if n_lines:
+            scales[scale]["with_lines"] += 1
+            scales[scale]["lines"] += n_lines
+        else:
+            scales[scale]["empty"] += 1
+        if gps_tid is not None and tid == gps_tid:
+            gps_lines = n_lines
+
+    bb = info["bbox"]
+    return {
+        "path": str(path),
+        "size": info["size"],
+        "num_tiles": info["num_tiles"],
+        "bbox": bb,
+        "bbox_deg": (bb[0] / 1e6, bb[1] / 1e6, bb[2] / 1e6, bb[3] / 1e6),
+        "scales": scales,
+        "gps_tid": gps_tid,
+        "gps_lines": gps_lines,
+        "gps_inside": gps_inside,
+    }
+
+
+def cmd_inspect(args) -> int:
+    path = Path(args.wzm)
+    if not path.is_file():
+        print(f"absent: {path}", file=sys.stderr)
+        return 1
+    s = summarize_wzm(path, args.lon, args.lat)
+    print(f"{path}  {s['size'] / 1024:.1f} Kio  {s['num_tiles']} tuiles")
+    w, so, e, n = s["bbox_deg"]
+    print(f"  bbox {w:.5f},{so:.5f} → {e:.5f},{n:.5f}")
+    for i, row in enumerate(s["scales"]):
+        if not row["tiles"]:
+            continue
+        print(
+            f"  échelle {i}: {row['tiles']} tuiles, "
+            f"{row['with_lines']} avec rues, {row['empty']} vides, "
+            f"{row['lines']} lignes"
+        )
+    rc = 0
+    if s["scales"][0]["lines"] == 0:
+        print(
+            "  ÉCHELLE 0 VIDE — zoom rue = écran néant "
+            "(souvent Overpass détail raté, seulement les axes au dézoom).",
+            file=sys.stderr,
+        )
+        rc = 2
+    if s["gps_tid"] is not None:
+        inside = s["gps_inside"]
+        nlines = s["gps_lines"]
+        print(
+            f"  GPS tuile {s['gps_tid']}: "
+            f"{'hors bbox' if not inside else str(nlines) + ' ligne(s)'}"
+        )
+        if not inside or not nlines:
+            print(
+                "  GPS hors carte ou tuile sans rues — reconstruire autour du GPS.",
+                file=sys.stderr,
+            )
+            rc = 2
+    return rc
+
+
 def cmd_build(args) -> int:
     detail_scales = list(range(args.max_scale + 1))
     wide_scales: list[int] = []
@@ -920,12 +1108,13 @@ def cmd_build(args) -> int:
         elements = json.loads(Path(args.osm).read_text(encoding="utf-8")).get("elements", [])
         print(f"{len(elements)} éléments lus depuis {args.osm}")
         ways = list(ways_from_elements(elements))
-        wide_ways = ways if wide_scales else []
     else:
         west, south, east, north = (float(v) for v in args.bbox.split(","))
         print(f"Interrogation d'Overpass pour {west},{south},{east},{north}…")
         try:
-            elements = fetch_overpass((west, south, east, north))
+            elements = fetch_overpass(
+                (west, south, east, north), timeout=60, attempts=2
+            )
         except RuntimeError as exc:
             print(f"\n{exc}", file=sys.stderr)
             return 1
@@ -936,28 +1125,50 @@ def cmd_build(args) -> int:
         print(f"  copie gardée dans {cache} (réutilisable avec --osm)")
         ways = list(ways_from_elements(elements))
 
-        wide_ways = []
-        if wide_bbox and wide_scales:
-            ww, ws, we, wn = wide_bbox
+    wide_ways: list = []
+    wide_fill = False
+    if wide_bbox and wide_scales:
+        ww, ws, we, wn = wide_bbox
+        wide_cache = ROOT / "logs" / f"osm-{args.name}-wide.json"
+        wide_el: list[dict] = []
+        if getattr(args, "fetch_wide", False):
             print(
                 f"Axes majeurs (dézoom) Overpass pour {ww},{ws},{we},{wn} "
-                f"(échelles {wide_scales[0]}..{wide_scales[-1]})…"
+                f"(échelles {wide_scales[0]}..{wide_scales[-1]}, timeout 20 s)…"
             )
-            try:
-                wide_el = fetch_overpass(
-                    wide_bbox,
-                    highways="motorway|trunk|primary|secondary",
-                )
-            except RuntimeError as exc:
-                print(f"\n{exc}", file=sys.stderr)
-                return 1
-            print(f"{len(wide_el)} éléments majeurs reçus")
-            wide_cache = ROOT / "logs" / f"osm-{args.name}-wide.json"
+            wide_el = fetch_overpass(
+                wide_bbox,
+                highways=WIDE_HIGHWAYS,
+                timeout=20,
+                attempts=1,
+                required=False,
+                max_hosts=2,
+            )
+        if not wide_el:
+            wide_el = load_osm_cache(wide_cache)
+            if wide_el:
+                print(f"  dézoom depuis le cache {wide_cache.name} ({len(wide_el)} él.)")
+        if wide_el:
+            wide_cache.parent.mkdir(parents=True, exist_ok=True)
             wide_cache.write_text(json.dumps({"elements": wide_el}), encoding="utf-8")
             wide_ways = list(ways_from_elements(wide_el))
+            wide_fill = True
+        if not wide_ways:
+            wide_ways = major_ways(ways)
+            print(
+                f"  dézoom = axes du détail ({len(wide_ways)} voies) "
+                "— pas d'Overpass 70 km (ça 504). Suffisant au zoom rue."
+            )
 
     if not ways and not wide_ways:
         print("Aucune route trouvée — vérifie la zone.", file=sys.stderr)
+        return 1
+    if detail_scales and not ways:
+        print(
+            "Overpass détail vide : la carte n'aurait que le dézoom "
+            "(écran néant au zoom rue). Rien n'est écrit.",
+            file=sys.stderr,
+        )
         return 1
     print(f"{len(ways)} voies détail" + (f", {len(wide_ways)} voies majeures" if wide_ways else ""))
 
@@ -984,7 +1195,7 @@ def cmd_build(args) -> int:
             detail_u = (min(lons), min(lats), max(lons), max(lats))
         tiles = fill_bbox_tiles(tiles, detail_u, detail_scales)
 
-    if wide_bbox and wide_scales:
+    if wide_fill and wide_bbox and wide_scales:
         ww, ws, we, wn = wide_bbox
         wide_u = (
             int(round(ww * 1e6)),
@@ -1121,6 +1332,11 @@ def main() -> int:
         default=2,
         help="première échelle qui utilise --wide-bbox (défaut 2)",
     )
+    build.add_argument(
+        "--fetch-wide",
+        action="store_true",
+        help="interroge Overpass pour une bbox dézoom (souvent 504 — off par défaut)",
+    )
 
     def _build_wrapper(args):
         if not args.bbox and not args.osm:
@@ -1135,6 +1351,15 @@ def main() -> int:
     mini.add_argument("--name", default="minimal", help="dossier maps/<name>/")
     mini.add_argument("--fips", type=int, default=WORLD_FIPS)
     mini.set_defaults(func=cmd_build_minimal)
+
+    insp = sub.add_parser(
+        "inspect",
+        help="compte les rues par échelle (zoom rue = échelle 0)",
+    )
+    insp.add_argument("wzm", help="fichier map77001.wzm")
+    insp.add_argument("--lon", type=float)
+    insp.add_argument("--lat", type=float)
+    insp.set_defaults(func=cmd_inspect)
 
     args = parser.parse_args()
     if args.cmd == "selftest":

@@ -30,9 +30,9 @@ SSH_OPTS="$SSH_OPTS -o ControlMaster=auto -o ControlPath=/tmp/waze-ssh-%r@%h-%p 
 
 if [ "$MAP_REGION" = "minimal" ]; then
   python3 "$ROOT/scripts/wazemap.py" build-minimal --lon 6.484687 --lat 46.364578 --name minimal
-elif [ -f "$ROOT/logs/rts-catcher.txt" ]; then
-  python3 "$ROOT/scripts/map_auto.py" ensure --from-log --force 2>/dev/null || true
 fi
+# Ne JAMAIS --force Overpass ici : une carte vide/hors GPS = écran néant.
+# La carte déjà dans maps/auto/ (96e7e67 ou dernier build réussi) est celle qu'on envoie.
 
 if [ -f "$INDEX" ]; then
   scp $SSH_OPTS "$INDEX" "root@${PHONE}:/tmp/77001_index.wdf"
@@ -41,11 +41,43 @@ else
 fi
 
 if [ -f "$WZM" ]; then
+  SZ=$(wc -c < "$WZM" | tr -d ' ')
+  if [ "${SZ:-0}" -lt 20000 ]; then
+    echo "ERREUR: $WZM trop petit (${SZ} o) — carte vide, Waze afficherait un néant."
+    echo "Garde maps/auto/ existant, ou: python3 scripts/map_auto.py build --lon LON --lat LAT"
+    exit 1
+  fi
   echo "Envoi carte $(du -h "$WZM" | cut -f1)…"
+  GPS_ARGS=""
+  if [ -f "$ROOT/logs/rts-catcher.txt" ]; then
+    GPS_ARGS=$(
+      cd "$ROOT" && python3 -c "
+import sys
+sys.path.insert(0, 'scripts')
+from map_auto import coords_from_log
+p = coords_from_log()
+if p:
+    print('--lon', p[0], '--lat', p[1])
+" 2>/dev/null || true
+    )
+  fi
+  python3 "$ROOT/scripts/wazemap.py" inspect "$WZM" $GPS_ARGS || {
+    echo "ERREUR: carte sans rues au zoom rue / GPS hors carte — ne pas l'envoyer."
+    echo "Reconstruire autour du GPS :"
+    echo "  python3 scripts/map_auto.py build --lon 6.4847 --lat 46.3646 --force"
+    exit 1
+  }
   scp $SSH_OPTS "$WZM" "root@${PHONE}:/tmp/map77001.wzm"
 else
   echo "ERREUR: $WZM absent — ouvre Waze (GPS) puis relance phone.sh"
   exit 1
+fi
+
+SOUND_SRC="$ROOT/mitm/fake-resources/resources/sounds/1.0/eng"
+if [ -d "$SOUND_SRC" ]; then
+  echo "Envoi prompts…"
+  ssh $SSH_OPTS "root@${PHONE}" "rm -rf /tmp/waze-sound-eng; mkdir -p /tmp/waze-sound-eng"
+  scp $SSH_OPTS "$SOUND_SRC"/* "root@${PHONE}:/tmp/waze-sound-eng/"
 fi
 
 sed 's/\r$//' "$ROOT/scripts/waze-cache-maps.sh" | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-cache-maps.sh"

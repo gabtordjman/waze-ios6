@@ -50,6 +50,16 @@ PROMPTS = [
     "AndThen",
     "StartDrive",
     "StartDrive1",
+    "StartDrive2",
+    "StartDrive3",
+    "StartDrive4",
+    "StartDrive5",
+    "StartDrive6",
+    "StartDrive7",
+    "StartDrive8",
+    "StartDrive9",
+    "TickerPoints",
+    "Arrive",
     "Marked",
     "ApproachAccident",
     "ApproachHazard",
@@ -86,6 +96,16 @@ SPOKEN = {
     "AndThen": "and then",
     "StartDrive": "starting route",
     "StartDrive1": "starting route",
+    "StartDrive2": "starting route",
+    "StartDrive3": "starting route",
+    "StartDrive4": "starting route",
+    "StartDrive5": "starting route",
+    "StartDrive6": "starting route",
+    "StartDrive7": "starting route",
+    "StartDrive8": "starting route",
+    "StartDrive9": "starting route",
+    "TickerPoints": "ready",
+    "Arrive": "you have arrived",
     "Marked": "marked",
     "ApproachAccident": "accident ahead",
     "ApproachHazard": "hazard ahead",
@@ -110,6 +130,25 @@ def _sapi_wav(text: str, wav: Path) -> bool:
         return r.returncode == 0 and wav.is_file() and wav.stat().st_size > 100
     except Exception:
         return False
+
+
+def _espeak_wav(text: str, wav: Path) -> bool:
+    for cmd in (("espeak", "-w", str(wav), text), ("espeak-ng", "-w", str(wav), text)):
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=20)
+            if r.returncode == 0 and wav.is_file() and wav.stat().st_size > 100:
+                return True
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+    return False
+
+
+def _make_wav(text: str, wav: Path) -> bool:
+    if sys.platform == "win32" and _sapi_wav(text, wav):
+        return True
+    return _espeak_wav(text, wav)
 
 
 def _ffmpeg_mp3(wav: Path, mp3: Path) -> bool:
@@ -137,7 +176,7 @@ def main() -> int:
     for name in PROMPTS:
         dest = OUT / f"{name}.mp3"
         text = SPOKEN.get(name, name)
-        if use_voice and _sapi_wav(text, tmp) and _ffmpeg_mp3(tmp, dest):
+        if use_voice and _make_wav(text, tmp) and _ffmpeg_mp3(tmp, dest):
             spoken += 1
         else:
             dest.write_bytes(_MP3 * 8)

@@ -101,7 +101,23 @@ grep -v '^Download.Map name:' | \
 grep -v '^TTS.Feature Enabled:' | \
 grep -v '^Navigation.Navigation guidance on:' | \
 grep -v '^Navigation.Navigation guidance enabled:' | \
+grep -v '^Navigation.Navigation guidance type:' | \
+grep -v '^Navigation.Guidance type default:' | \
+grep -v '^Prompts.Name:' | \
 grep -v '^Map.Static County:' | \
+grep -v '^Editor.Gray scale:' | \
+grep -v '^Display.Auto night mode:' | \
+grep -v '^Display.Map sub_skin:' | \
+grep -v '^Map.Background:' | \
+grep -v '^Map.Labels:' | \
+grep -v '^Navigation.RouteColor:' | \
+grep -v '^Streets.' | \
+grep -v '^Secondary.' | \
+grep -v '^Primary.' | \
+grep -v '^Freeways.' | \
+grep -v '^Highways.' | \
+grep -v '^Ramps.' | \
+grep -v '^Exit.' | \
 grep -v '^Tiles.Last Session:' | \
 grep -v '^Tiles.Loading session lifetime:' | \
 grep -v 'Secho' | \
@@ -131,8 +147,38 @@ echo "Download.Sound: http://$PC/resources/sounds/" >> /tmp/wpref.n
 echo "TTS.Feature Enabled: no" >> /tmp/wpref.n
 echo "Navigation.Navigation guidance on: yes" >> /tmp/wpref.n
 echo "Navigation.Navigation guidance enabled: yes" >> /tmp/wpref.n
+echo "Navigation.Navigation guidance type: Minimal" >> /tmp/wpref.n
+echo "Navigation.Guidance type default: Minimal" >> /tmp/wpref.n
+echo "Prompts.Name: eng" >> /tmp/wpref.n
 echo "Download.Enabled: no" >> /tmp/wpref.n
 echo "Map.Static County: 77001" >> /tmp/wpref.n
+echo "Editor.Gray scale: no" >> /tmp/wpref.n
+echo "Display.Auto night mode: no" >> /tmp/wpref.n
+echo "Display.Map sub_skin: day" >> /tmp/wpref.n
+echo "Map.Background: #EFEBE3" >> /tmp/wpref.n
+echo "Map.Labels: yes" >> /tmp/wpref.n
+echo "Navigation.RouteColor: #9933FF" >> /tmp/wpref.n
+echo "Streets.Thickness: 4" >> /tmp/wpref.n
+echo "Streets.Color: #8EB8D8" >> /tmp/wpref.n
+echo "Streets.Delta1: 2" >> /tmp/wpref.n
+echo "Streets.Color1: #FFFFFF" >> /tmp/wpref.n
+echo "Streets.LabelColor: #222222" >> /tmp/wpref.n
+echo "Secondary.Thickness: 5" >> /tmp/wpref.n
+echo "Secondary.Color: #9AABB8" >> /tmp/wpref.n
+echo "Secondary.Delta1: 3" >> /tmp/wpref.n
+echo "Secondary.Color1: #E8E8E8" >> /tmp/wpref.n
+echo "Primary.Thickness: 7" >> /tmp/wpref.n
+echo "Primary.Color: #A0A8B0" >> /tmp/wpref.n
+echo "Primary.Delta1: 4" >> /tmp/wpref.n
+echo "Primary.Color1: #D4D4D4" >> /tmp/wpref.n
+echo "Freeways.Thickness: 9" >> /tmp/wpref.n
+echo "Freeways.Color: #B0B0B0" >> /tmp/wpref.n
+echo "Freeways.Delta1: 6" >> /tmp/wpref.n
+echo "Freeways.Color1: #C8C8C8" >> /tmp/wpref.n
+echo "Ramps.Thickness: 4" >> /tmp/wpref.n
+echo "Ramps.Color: #9BB8C8" >> /tmp/wpref.n
+echo "Ramps.Delta1: 2" >> /tmp/wpref.n
+echo "Ramps.Color1: #FFFFFF" >> /tmp/wpref.n
 cp /tmp/wpref.n "$PREF"
 cp /tmp/wpref.n "$BUNDLE"
 
@@ -143,7 +189,11 @@ if [ -f "$USERF" ]; then
   grep -v '^Realtime.Nickname:' | \
   grep -v '^Realtime.Random user:' | \
   grep -v '^Welcome Wizard.First time:' | \
-  grep -v '^Welcome Wizard.Terms of Use accepted:' > /tmp/wuser.n
+  grep -v '^Welcome Wizard.Terms of Use accepted:' | \
+  grep -v '^Navigation.Navigation guidance type:' | \
+  grep -v '^Prompts.Name:' | \
+  grep -v '^Display.Auto night mode:' | \
+  grep -v '^Display.Map sub_skin:' > /tmp/wuser.n
 else
   cp /dev/null /tmp/wuser.n
 fi
@@ -153,7 +203,24 @@ echo "Realtime.Nickname: ios6user" >> /tmp/wuser.n
 echo "Realtime.Random user: 0" >> /tmp/wuser.n
 echo "Welcome Wizard.First time: iphone_no" >> /tmp/wuser.n
 echo "Welcome Wizard.Terms of Use accepted: yes" >> /tmp/wuser.n
+echo "Navigation.Navigation guidance type: Minimal" >> /tmp/wuser.n
+echo "Prompts.Name: eng" >> /tmp/wuser.n
+echo "Display.Auto night mode: no" >> /tmp/wuser.n
+echo "Display.Map sub_skin: day" >> /tmp/wuser.n
 cp /tmp/wuser.n "$USERF"
+
+# Prompts MP3 Minimal → {user}/sound/eng/ (roadmap_sound.m + roadmap_prompts_exist).
+SOUND_DST="$CONTAINER/Documents/sound/eng"
+mkdir -p "$SOUND_DST"
+if [ -d /tmp/waze-sound-eng/eng ]; then
+  cp /tmp/waze-sound-eng/eng/* "$SOUND_DST/" 2>/dev/null || true
+elif [ -d /tmp/waze-sound-eng ]; then
+  cp /tmp/waze-sound-eng/* "$SOUND_DST/" 2>/dev/null || true
+fi
+echo "Prompts → $SOUND_DST ($(ls "$SOUND_DST" 2>/dev/null | wc -l) fichiers)"
+if id mobile >/dev/null 2>&1; then
+  chown -R mobile:mobile "$CONTAINER/Documents/sound" 2>/dev/null || true
+fi
 
 # ── Carte : index + .wzm dans le cache ; bundle/maps → lien vers le cache ───
 # roadmap_db_map_path() lit l'index dans bundle/maps (IPHONE).
