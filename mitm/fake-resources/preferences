@@ -106,5 +106,5 @@ Folder.sound: &/sound
 Matcher.Direction Invalid Speed Weight: 10
 Alerts.Alert Distance: 400
 TTS.Feature Enabled: no
-Navigation.Navigation guidance on: no
-Navigation.Navigation guidance enabled: no
+Navigation.Navigation guidance on: yes
+Navigation.Navigation guidance enabled: yes

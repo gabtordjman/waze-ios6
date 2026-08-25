@@ -129,8 +129,8 @@ echo "Download.Images: http://$PC/resources/images/" >> /tmp/wpref.n
 echo "Download.Sound: http://$PC/resources/sounds/" >> /tmp/wpref.n
 # Pas de Langs TTS (évite le blocage « Preparing navigation voice »).
 echo "TTS.Feature Enabled: no" >> /tmp/wpref.n
-echo "Navigation.Navigation guidance on: no" >> /tmp/wpref.n
-echo "Navigation.Navigation guidance enabled: no" >> /tmp/wpref.n
+echo "Navigation.Navigation guidance on: yes" >> /tmp/wpref.n
+echo "Navigation.Navigation guidance enabled: yes" >> /tmp/wpref.n
 echo "Download.Enabled: no" >> /tmp/wpref.n
 echo "Map.Static County: 77001" >> /tmp/wpref.n
 cp /tmp/wpref.n "$PREF"

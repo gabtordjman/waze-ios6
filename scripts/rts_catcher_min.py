@@ -65,7 +65,7 @@ except ImportError:
     def _note_tile_served(kind: str = "wzm") -> None:
         pass
 
-CATCHER_REV = "proto150-route-20260825q"
+CATCHER_REV = "proto150-route-20260825u"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -91,14 +91,41 @@ except ImportError:
     def search_body(*_a, **_k) -> bytes:
         return b"RC,600,No matches\r\n"
 
+try:
+    from waze_alerts import (
+        parse_report_alert,
+        parse_rm_alert,
+        poll_alert_lines,
+        report_alert_response,
+        rm_alert_response,
+    )
+except ImportError:
+    def parse_report_alert(_body: bytes):
+        return None
+
+    def parse_rm_alert(_body: bytes):
+        return None
+
+    def poll_alert_lines() -> list[str]:
+        return ["RC,200,OK"]
+
+    def report_alert_response(_parsed: dict) -> list[str]:
+        return ["RC,200,OK"]
+
+    def rm_alert_response(_aid: int) -> list[str]:
+        return ["RC,200,OK"]
+
 _ROUTE_IMPORT_ERR = ""
 try:
-    from waze_route import parse_routing_request, routing_body
+    from waze_route import dest_label_from_request, parse_routing_request, routing_body
 except Exception as e:
     _ROUTE_IMPORT_ERR = f"{type(e).__name__}: {e}"
 
     def parse_routing_request(body: bytes):
         return None
+
+    def dest_label_from_request(_body: bytes) -> str:
+        return ""
 
     def routing_body(*_a, **_k) -> bytes:
         return b"RC,500,Service unavailable\r\n"
@@ -398,12 +425,16 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Download", "Langs", f"{BASE}/resources/langs/"),
         ("Download", "Images", f"{BASE}/resources/images/"),
         ("Download", "Sound", f"{BASE}/resources/sounds/"),
+        ("Download", "Sound_Ver", "1.0"),
+        ("Download", "Config_Ver", "1.0"),
+        ("Download", "Langs_Ver", "1.0"),
         # Tuiles HTTP : le client complète la carte au pan/dézoom sans SSH.
         ("Download", "Tiles", f"{BASE}/tiles"),
-        # Pas de Langs TTS : sinon « Preparing navigation voice » bloque ~27 %.
+        # TTS WAS bloque le login (« Preparing navigation voice »). MP3 Minimal à la place.
         ("TTS", "Feature Enabled", "no"),
-        ("Navigation", "Navigation guidance on", "no"),
-        ("Navigation", "Navigation guidance enabled", "no"),
+        ("Navigation", "Navigation guidance on", "yes"),
+        ("Navigation", "Navigation guidance enabled", "yes"),
+        ("Navigation", "Navigation guidance default", "Minimal"),
         ("Download", "Source", f"{BASE}/maps"),
         ("Map", "Static County", str(WORLD_FIPS)),
         ("Download", "Enabled", "no"),
@@ -585,9 +616,13 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
             _log(f"  parse RoutingRequest FAIL champs={len(f)}")
             return "Itinéraire→RC500 indisponible", BODY_UNAVAILABLE, False
         rid, lon1, lat1, lon2, lat2 = parsed
-        _log(f"  itinéraire #{rid} {lon1:.5f},{lat1:.5f} → {lon2:.5f},{lat2:.5f}")
+        dest = dest_label_from_request(req_body)
+        _log(
+            f"  itinéraire #{rid} {lon1:.5f},{lat1:.5f} → {lon2:.5f},{lat2:.5f}"
+            + (f" dest={dest!r}" if dest else "")
+        )
         try:
-            body = routing_body(rid, lon1, lat1, lon2, lat2)
+            body = routing_body(rid, lon1, lat1, lon2, lat2, dest_name=dest)
         except Exception as e:
             _log(f"  routing_body FAIL: {type(e).__name__}: {e}")
             return "Itinéraire→RC500 exception", BODY_UNAVAILABLE, False
@@ -623,8 +658,30 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
                         pass
         _log(
             f"  → {nseg} seg carte locale, {nturn} manœuvre(s), {named} nom(s)"
+            + (f" dest={dest!r}" if dest else "")
         )
         return "Itinéraire→OSRM+wzm", body, False
+
+    if "reportalert" in cset:
+        parsed = parse_report_alert(req_body)
+        if not parsed:
+            _log("  ReportAlert parse FAIL")
+            return "Report→RC200", BODY_RC, False
+        rows = report_alert_response(parsed)
+        _log(f"  report type={parsed['type']} id={rows[-1].split(',')[1] if rows else '?'}")
+        return "Report→AddAlert", _lines(rows), False
+
+    if "reportrmalert" in cset:
+        aid = parse_rm_alert(req_body)
+        if aid is None:
+            return "RmAlert→RC200", BODY_RC, False
+        return "RmAlert", _lines(rm_alert_response(aid)), False
+
+    if cset & {"at", "seeme"}:
+        rows = poll_alert_lines()
+        if len(rows) > 1:
+            _log(f"  → {len(rows) - 1} alerte(s) carte")
+            return "Realtime→AddAlert", _lines(rows), False
 
     return "Realtime→RC200", BODY_RC, False
 
@@ -715,6 +772,28 @@ def _resolve_resource(path: str) -> Path | None:
         )
     if name.startswith("lang."):
         candidates.extend([RES / "langs" / name, RES / "resources" / "langs" / name])
+    if "sounds" in parts or (len(parts) >= 1 and "sound" in "/".join(parts).lower()):
+        stem = Path(name).stem if name else ""
+        lang = "eng"
+        for p in parts:
+            if p in ("eng", "fra", "heb"):
+                lang = p
+        for folder in (
+            RES / "resources" / "sounds" / "1.0" / lang,
+            RES / "sounds" / "1.0" / lang,
+            RES / "sounds" / lang,
+        ):
+            if stem:
+                candidates.append(folder / stem)
+                candidates.append(folder / f"{stem}.mp3")
+            candidates.append(folder / name)
+    if name == "prompts.conf":
+        candidates.extend(
+            [
+                RES / "resources" / "config" / "1.0" / "1" / "prompts.conf",
+                RES / "config" / "1.0" / "1" / "prompts.conf",
+            ]
+        )
     if len(parts) >= 2 and parts[0] == "config":
         candidates.append(RES / "config" / parts[-1])
         if len(parts) >= 3:
@@ -737,6 +816,8 @@ def _guess_ct(path: str, data: bytes) -> str:
         return "image/gif"
     if low.endswith((".conf", ".txt", ".lang")) or b"lang." in path.encode():
         return "text/plain; charset=utf-8"
+    if "sounds" in low or low.endswith(".mp3"):
+        return "audio/mpeg"
     if data[:4] == b"\x89PNG":
         return "image/png"
     return "application/octet-stream"

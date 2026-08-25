@@ -325,6 +325,51 @@ def _dist_to_seg(
     return int(abs(lon - px) + abs(lat - py))
 
 
+def _ends(row: tuple) -> tuple[tuple[int, int], tuple[int, int]]:
+    return (row[8], row[9]), (row[6], row[7])
+
+
+def _min_end_gap(a: tuple, b: tuple) -> int:
+    ea, eb = _ends(a), _ends(b)
+    return min(abs(p[0] - q[0]) + abs(p[1] - q[1]) for p in ea for q in eb)
+
+
+def _fill_line_gaps(raw: list[tuple], index: list[tuple]) -> list[tuple]:
+    """Insère une ligne .wzm seulement si elle relie vraiment prev et next."""
+    connect = 4_000
+    if len(raw) < 2:
+        return raw
+    out = [raw[0]]
+    for nxt in raw[1:]:
+        hops = 0
+        while _min_end_gap(out[-1], nxt) > connect and hops < 8:
+            used = {r[:2] for r in out}
+            used.add(nxt[:2])
+            pe, ne = _ends(out[-1]), _ends(nxt)
+            bridge = None
+            best = 10**18
+            mid_lon = (out[-1][3] + nxt[3]) // 2
+            mid_lat = (out[-1][4] + nxt[4]) // 2
+            for row in index:
+                if row[:2] in used:
+                    continue
+                if abs(row[3] - mid_lon) + abs(row[4] - mid_lat) > 80_000:
+                    continue
+                re = _ends(row)
+                d1 = min(abs(p[0] - q[0]) + abs(p[1] - q[1]) for p in pe for q in re)
+                d2 = min(abs(p[0] - q[0]) + abs(p[1] - q[1]) for p in ne for q in re)
+                score = d1 + d2
+                if d1 < connect and d2 < connect and score < best:
+                    best = score
+                    bridge = row
+            if bridge is None:
+                break
+            out.append(bridge)
+            hops += 1
+        out.append(nxt)
+    return out
+
+
 def _turn_instr(b1: float, b2: float, *, name_change: bool = False) -> int:
     d = (b2 - b1 + 540.0) % 360.0 - 180.0
     ad = abs(d)
@@ -432,12 +477,9 @@ def _match_segments(
     if not raw:
         return []
 
-    if len(raw) > 60:
-        step = math.ceil(len(raw) / 60)
-        kept = raw[::step]
-        if kept[-1] != raw[-1]:
-            kept.append(raw[-1])
-        raw = kept
+    raw = _fill_line_gaps(raw, index)
+    if not raw:
+        return []
 
     weights = [max(r[5], 1) for r in raw]
     wsum = sum(weights) or 1
@@ -606,12 +648,55 @@ def _route_segment_rows(route_id: int, alt_id: int, segs: list[dict]) -> list[st
     return rows
 
 
+def dest_label_from_request(body: bytes) -> str:
+    """Rue (+ ville) du RoutingRequest — pour le dernier dest_name, pas le Via."""
+    for line in body.replace(b"\r\n", b"\n").split(b"\n"):
+        if not line.lower().startswith(b"routingrequest,"):
+            continue
+        f = line.decode("latin1", errors="replace").split(",")
+        street = _ascii(f[19]) if len(f) > 19 else ""
+        city = ""
+        try:
+            nopt = int(f[23])
+            base = 24 + nopt
+            if len(f) > base + 2:
+                city = _ascii(f[base + 2])
+        except (ValueError, IndexError):
+            pass
+        if street and city:
+            return f"{street} {city}".strip()
+        return street or city
+    return ""
+
+
+def via_label_from_steps(steps: list[dict], dest_name: str = "") -> str:
+    """Voie principale du trajet (alt_description / Via). Jamais la destination."""
+    dest = (dest_name or "").lower()
+    best, best_d = "", -1
+    for st in steps:
+        name = st.get("name") or ""
+        if not name:
+            continue
+        if dest and (name.lower() in dest or dest in name.lower()):
+            continue
+        d = int(st.get("dist") or 0)
+        if d > best_d:
+            best, best_d = name, d
+    if best:
+        return best
+    for st in steps:
+        if st.get("name"):
+            return st["name"]
+    return ""
+
+
 def routing_body(
     route_id: int,
     lon1: float,
     lat1: float,
     lon2: float,
     lat2: float,
+    dest_name: str = "",
 ) -> bytes:
     got = osrm_route(lon1, lat1, lon2, lat2)
     if not got:
@@ -624,18 +709,24 @@ def routing_body(
     alt_id = 1
     try:
         matched = _match_segments(pts, length, duration)
-    except Exception:
+    except Exception as e:
+        print(f"  matcher FAIL: {type(e).__name__}: {e}", flush=True)
         matched = []
     if matched:
         _apply_osrm_steps(matched, steps)
     else:
         matched = _segments_from_steps(steps, length, duration)
 
+    dest = _ascii(dest_name)
+    via = via_label_from_steps(steps, dest)
+    if matched and dest:
+        matched[-1]["dest_name"] = dest
+
     nseg = len(matched) if matched else 2
     rows = [
         "RC,200,OK",
         f"RoutingResponseCode,{route_id},1,200,OK",
-        f"RoutingResponse,{route_id},{ROUTE_ORIGINAL},{alt_id},Route,"
+        f"RoutingResponse,{route_id},{ROUTE_ORIGINAL},{alt_id},{via},"
         f"{length},{duration},{nseg},0,0,0",
         "RoutePoints,"
         + f"{route_id},{alt_id},{len(pts)},0,{len(pts) * 2},"
