@@ -42,7 +42,10 @@ from urllib.parse import unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from map_auto import schedule_build as _schedule_map_build, coords_sane
+    from map_auto import (
+        schedule_build as _schedule_map_build,
+        coords_sane,
+    )
 except ImportError:
     def _schedule_map_build(lon: float, lat: float, *, force: bool = False) -> None:
         pass
@@ -50,7 +53,19 @@ except ImportError:
     def coords_sane(lon: float, lat: float) -> bool:
         return True
 
-CATCHER_REV = "proto150-wzm-zoom-20260825i"
+try:
+    from tile_serve import (
+        get_tile as _get_wzm_tile,
+        note_served as _note_tile_served,
+    )
+except ImportError:
+    def _get_wzm_tile(path: str, *, allow_stub: bool = True):
+        return None, ""
+
+    def _note_tile_served(kind: str = "wzm") -> None:
+        pass
+
+CATCHER_REV = "proto150-route-20260825q"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -66,6 +81,27 @@ MAPS = ROOT / "maps"     # paquets hors-ligne <region>/map<fips>.wzm
 PC_IP = os.environ.get("PC_IP", "192.168.1.191").strip()
 BASE = f"http://{PC_IP}"
 BIN_CT = "binary/octet-stream"
+
+try:
+    from waze_search import parse_search_form, search_body
+except ImportError:
+    def parse_search_form(body: bytes):
+        return "", None, None
+
+    def search_body(*_a, **_k) -> bytes:
+        return b"RC,600,No matches\r\n"
+
+_ROUTE_IMPORT_ERR = ""
+try:
+    from waze_route import parse_routing_request, routing_body
+except Exception as e:
+    _ROUTE_IMPORT_ERR = f"{type(e).__name__}: {e}"
+
+    def parse_routing_request(body: bytes):
+        return None
+
+    def routing_body(*_a, **_k) -> bytes:
+        return b"RC,500,Service unavailable\r\n"
 
 REGISTER_OK = "RegisterSuccessful,ios6user,ios6pass"
 
@@ -117,6 +153,23 @@ def _line_fields(req_body: bytes, prefix: bytes) -> list[str]:
     return []
 
 
+def _parse_routing_fallback(req_body: bytes):
+    """Parse RoutingRequest même si waze_route n'est pas importé."""
+    f = _line_fields(req_body, b"routingrequest,")
+    if len(f) < 16:
+        return None
+    try:
+        return (
+            int(f[1]),
+            int(f[7]) / 1e6,
+            int(f[8]) / 1e6,
+            int(f[14]) / 1e6,
+            int(f[15]) / 1e6,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
 def _coords_from_body(req_body: bytes) -> tuple[float, float] | None:
     """GPS réel uniquement — jamais le centre de MapDisplayed.
 
@@ -156,8 +209,8 @@ def _maybe_build_map(req_body: bytes) -> None:
     if not coords_sane(lon, lat):
         _log(f"  GPS ignoré (fix invalide {lon:.6f},{lat:.6f})")
         return
-    _schedule_map_build(lon, lat)
-    _log(f"  → carte OSM auto programmée pour {lon:.6f},{lat:.6f} (maps/auto/)")
+    # Ne pas régénérer maps/auto au login : ça écrasait la carte qui s'affichait.
+    _log(f"  GPS {lon:.6f},{lat:.6f} (carte figée — sh maps.sh auto)")
 
 
 def _client_proto(req_body: bytes) -> tuple[int, bool]:
@@ -345,15 +398,22 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Download", "Langs", f"{BASE}/resources/langs/"),
         ("Download", "Images", f"{BASE}/resources/images/"),
         ("Download", "Sound", f"{BASE}/resources/sounds/"),
+        # Tuiles HTTP : le client complète la carte au pan/dézoom sans SSH.
+        ("Download", "Tiles", f"{BASE}/tiles"),
         # Pas de Langs TTS : sinon « Preparing navigation voice » bloque ~27 %.
         ("TTS", "Feature Enabled", "no"),
         ("Navigation", "Navigation guidance on", "no"),
         ("Navigation", "Navigation guidance enabled", "no"),
-        # Pas de Download.Tiles : pousse Waze a telecharger des .wdf HTTP qui
-        # provoquent un crash sur nos tuiles OSM. Carte = map77001.wzm local.
         ("Download", "Source", f"{BASE}/maps"),
-        ("Download", "Enabled", "yes"),
         ("Map", "Static County", str(WORLD_FIPS)),
+        ("Download", "Enabled", "no"),
+        # Recherche d'adresses (single_search / address_search → /rtserver/mozi*).
+        ("Single Search", "Web-Service Address", f"{BASE}/rtserver"),
+        ("Address Search", "Web-Service Address", f"{BASE}/rtserver"),
+        ("Local Search", "Web-Service Address", f"{BASE}/rtserver"),
+        # RoutingRequest en V2 → réponse préfixée ack\r\n (voir _ack_for).
+        ("Realtime", "Web-Service V2 Commands", "RoutingRequest"),
+        ("Realtime", "Web-Service V2 Suffix", ""),
     ]
 
 
@@ -403,8 +463,12 @@ def _cmds(req_body: bytes) -> list[str]:
     return out
 
 
-def _ack_for(path: str) -> bytes:
+def _ack_for(path: str, *, req_body: bytes = b"") -> bytes:
+    """Préfixe `ack\\r\\n` exigé par OnHTTPAck pour le protocole V2."""
     if "/distrib/" in path.lower():
+        return b"ack\r\n"
+    # Realtime.Web-Service V2 Commands: RoutingRequest
+    if b"routingrequest," in req_body.lower():
         return b"ack\r\n"
     return b""
 
@@ -452,7 +516,7 @@ def _tile_id(lon_deg: float, lat_deg: float, scale: int = 0) -> int:
 
 
 def _note_map_displayed(req_body: bytes) -> None:
-    """Journalise les tuiles que le client va réclamer une fois connecté."""
+    """Journalise les tuiles demandées — ne rebuild JAMAIS la carte."""
     f = _line_fields(req_body, b"mapdisplayed,")
     if len(f) < 11:
         return
@@ -494,15 +558,73 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         return "Register→Freemap_userpass", BODY_REGISTER, False
 
-    # Recherche : RC,600 = « aucun résultat » côté client (évite le crash sur
-    # une réponse vide que le parseur de résultats n'attend pas).
-    if cset & SEARCH_CMDS or "/search" in pl:
-        _log(f"  req ({len(req_body)}B): {req_body!r}")
-        return "Recherche→RC600 aucun résultat", BODY_NO_MATCH, False
+    # Recherche : POST form vers /mozi ou /mozi_combo (wst, pas le protocole RTS).
+    if (
+        "/mozi" in pl
+        or cset & SEARCH_CMDS
+        or "/search" in pl
+        or (
+            b"q=" in req_body[:200].lower()
+            and b"mobile=true" in req_body.lower()
+        )
+    ):
+        q, lon, lat = parse_search_form(req_body)
+        _log(f"  recherche q={q!r} near={lon},{lat}")
+        single = "mozi_combo" in pl or "single" in pl
+        body = search_body(q, lon=lon, lat=lat, single_search=single or True)
+        n = body.count(b"AddressCandidate")
+        return f"Recherche→{n} candidat(s)", body, False
 
     if cset & ROUTE_CMDS:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
-        return "Itinéraire→RC500 indisponible", BODY_UNAVAILABLE, False
+        parsed = parse_routing_request(req_body)
+        if not parsed:
+            parsed = _parse_routing_fallback(req_body)
+        if not parsed:
+            f = _line_fields(req_body, b"routingrequest,")
+            _log(f"  parse RoutingRequest FAIL champs={len(f)}")
+            return "Itinéraire→RC500 indisponible", BODY_UNAVAILABLE, False
+        rid, lon1, lat1, lon2, lat2 = parsed
+        _log(f"  itinéraire #{rid} {lon1:.5f},{lat1:.5f} → {lon2:.5f},{lat2:.5f}")
+        try:
+            body = routing_body(rid, lon1, lat1, lon2, lat2)
+        except Exception as e:
+            _log(f"  routing_body FAIL: {type(e).__name__}: {e}")
+            return "Itinéraire→RC500 exception", BODY_UNAVAILABLE, False
+        nseg = 0
+        nturn = 0
+        named = 0
+        for line in body.split(b"\n"):
+            ll = line.lower()
+            if ll.startswith(b"routingresponse,") and not ll.startswith(
+                b"routingresponsecode"
+            ):
+                parts = line.split(b",")
+                if len(parts) > 7:
+                    try:
+                        nseg = int(parts[7])
+                    except ValueError:
+                        pass
+            if ll.startswith(b"routesegments,"):
+                # instruction = 5e champ de chaque sextuplet ; 0 = CONTINUE
+                parts = line.decode("latin1", errors="replace").split(",")
+                try:
+                    nattrs = int(parts[5])
+                except (IndexError, ValueError):
+                    continue
+                nums = parts[6 : 6 + nattrs]
+                names = parts[6 + nattrs :]
+                named += sum(1 for n in names if n.strip())
+                for j in range(4, len(nums), 6):
+                    try:
+                        if int(nums[j]) != 0:
+                            nturn += 1
+                    except ValueError:
+                        pass
+        _log(
+            f"  → {nseg} seg carte locale, {nturn} manœuvre(s), {named} nom(s)"
+        )
+        return "Itinéraire→OSRM+wzm", body, False
 
     return "Realtime→RC200", BODY_RC, False
 
@@ -647,14 +769,17 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
             is_rts = "POST" in first and (
                 "/rtserver" in path
                 or "/distrib/" in path
+                or "/mozi" in path.lower()
                 or b"clientinfo" in req_body.lower()
                 or b"register" in req_body.lower()
                 or b"login" in req_body.lower()
                 or b"stats," in req_body.lower()
+                or b"routingrequest," in req_body.lower()
+                or b"q=" in req_body[:120].lower()
             )
             if is_rts:
                 label, body, close = _classify(req_body, path=path)
-                ack = _ack_for(path)
+                ack = _ack_for(path, req_body=req_body)
                 resp = _http_envelope(body, ack=ack, close=close)
                 conn.sendall(resp)
                 _log(f"  → {label} ack={ack!r} close={close} wire={len(resp)}B")
@@ -672,13 +797,31 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
             if "GET" in first:
                 is_tile = "/tiles" in path.lower()
                 if is_tile:
-                    # Tuiles HTTP desactivees — crash iOS 6. Carte via map77001.wzm local.
-                    conn.sendall(
-                        _http_envelope(
-                            b"", ack=b"", close=False, ctype="text/plain",
-                            status="404 Not Found",
+                    # Pas de stub vide : ça pollue le cache iOS (tuiles France
+                    # vides) et empêche une vraie carte plus tard. 404 = néant
+                    # hors zone. La carte locale reste celle du .wzm.
+                    blob, kind = _get_wzm_tile(path, allow_stub=False)
+                    if blob:
+                        _note_tile_served(kind)
+                        _log(
+                            f"  ★ tuile {kind}: {Path(path).name} ({len(blob)}B)"
                         )
-                    )
+                        conn.sendall(
+                            _http_envelope(
+                                blob, ack=b"", close=False, ctype=BIN_CT
+                            )
+                        )
+                    else:
+                        _log(f"  · tuile hors carte locale: {Path(path).name}")
+                        conn.sendall(
+                            _http_envelope(
+                                b"",
+                                ack=b"",
+                                close=False,
+                                ctype="text/plain",
+                                status="404 Not Found",
+                            )
+                        )
                     continue
                 if "/maps/" in path.lower():
                     _log(f"  ★★★ PAQUET DE CARTE demandé: {path}")
@@ -764,6 +907,8 @@ def main() -> None:
     http_port = int(os.environ.get("CATCHER_HTTP_PORT", "80"))
     https_port = int(os.environ.get("CATCHER_HTTPS_PORT", "443"))
     _log(f"CATCHER_REV={CATCHER_REV} → {PC_IP}")
+    if _ROUTE_IMPORT_ERR:
+        _log(f"  waze_route import FAIL: {_ROUTE_IMPORT_ERR}")
     _load_locked_variant()
     _log("Protocole 150 (Waze 2.4.0.0) : réponse exacte issue de la source GPL.")
     _log(
@@ -773,8 +918,8 @@ def main() -> None:
     _log("Succès = ★★★ LOGIN ACCEPTÉ (le client envoie At/SeeMe).")
     _log("Remise à zéro du balayage: rm logs/login-variant.txt")
     _log(f"Carte annoncée: Map.Static County={WORLD_FIPS}.")
-    _log("  Carte locale : sh phone.sh  (index bundle + map77001.wzm cache iOS).")
-    _log("  Pas de tuiles HTTP /tiles/ — crash sur iOS 6 avec tuiles OSM.")
+    _log("  Carte = Léman local (maps/auto). Pas d'expansion Overpass au pan/route.")
+    _log("  Nav = segments wzm (zoom rue) + RoutePoints OSRM (dézoom). Tuiles = wzm only.")
 
     http_sock = _bind_listen(http_port)
     https_sock = _bind_listen(https_port)
