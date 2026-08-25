@@ -20,6 +20,7 @@ from waze_route import (  # noqa: E402
     APPROACHING_DESTINATION,
     CONTINUE,
     TURN_LEFT,
+    TURN_RIGHT,
     _ascii,
     _apply_osrm_steps,
     _downsample_lines,
@@ -274,7 +275,9 @@ def test_alerts() -> None:
     rows = report_alert_response(parsed)
     assert rows[0] == "RC,200,OK"
     assert rows[1].startswith("ReportAlertRes,6,")
-    assert rows[2].startswith("AddAlert,")
+    assert "Merci" in rows[1]
+    assert any(r.startswith("UpdateUserPoints,6") for r in rows)
+    assert rows[-1].startswith("AddAlert,")
     line = add_alert_line(
         {
             "id": 1001,
@@ -322,7 +325,11 @@ def test_geo_french_and_thin_streets() -> None:
     assert "GeoServerConfig,1,world,fra," in text, text[:200]
     assert ",Prompts,Name,fra" in text
     assert ",Streets,Thickness,1" in text
+    assert ",Streets,Color,#9A9A9A" in text
+    assert ",Map,Background,#C5D0D4" in text
     assert ",System,Language,fra" in text
+    assert ",Scoreboard,Feature enabled,yes" in text
+    assert ",Scoreboard,Url," in text
 
 
 def test_prompts() -> None:
@@ -365,6 +372,8 @@ def test_prompts() -> None:
     assert "fra," in langs, langs
     fra = ROOT / "mitm" / "fake-resources" / "resources" / "langs" / "lang.fra"
     assert fra.is_file() and "Route found=" in fra.read_text(encoding="utf-8")
+    eng = ROOT / "mitm" / "fake-resources" / "resources" / "langs" / "lang.eng"
+    assert eng.is_file() and "lang=English" in eng.read_text(encoding="utf-8")
     voice = (
         ROOT
         / "mitm"
@@ -395,6 +404,64 @@ def test_osrm_steps_by_distance() -> None:
     assert segs[1]["instr"] == TURN_LEFT, [s["instr"] for s in segs]
     assert segs[1]["dest_name"] == "Main St"
     assert segs[-1]["instr"] == APPROACHING_DESTINATION
+
+
+def test_osrm_steps_clear_geometry_turns() -> None:
+    segs = [
+        {"len": 100, "instr": TURN_LEFT, "dest_name": "A"},
+        {"len": 100, "instr": TURN_RIGHT, "dest_name": "B"},
+        {"len": 100, "instr": CONTINUE, "dest_name": "C"},
+    ]
+    _apply_osrm_steps(segs, [{"instr": CONTINUE, "dist": 100, "name": "A"}])
+    assert segs[0]["instr"] == CONTINUE
+    assert segs[1]["instr"] == CONTINUE
+    assert segs[2]["instr"] == APPROACHING_DESTINATION
+
+
+def test_drop_kinks_skips_short_hook() -> None:
+    from waze_route import _drop_kinks
+
+    a = _line(1, 0, 0, 0, 4_000, 0, 0, 1)
+    hook = _line(1, 1, 4_000, 0, 4_000, 280, 1, 2)
+    b = _line(1, 2, 4_000, 0, 8_000, 0, 1, 3)
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    out = _drop_kinks([a, hook, b], pts)
+    assert [r[1] for r in out] == [0, 2], [r[1] for r in out]
+
+
+def test_resample_keeps_corner() -> None:
+    from waze_route import _resample_pts
+
+    pts = [(x, 0) for x in range(0, 4_001, 200)] + [(4_000, y) for y in range(200, 4_001, 200)]
+    out = _resample_pts(pts, 20)
+    assert out[0] == pts[0] and out[-1] == pts[-1]
+    assert any(p[0] == 4_000 and p[1] == 0 for p in out) or any(
+        abs(p[0] - 4_000) < 400 and abs(p[1]) < 400 for p in out
+    )
+
+
+def test_wazers_adduser() -> None:
+    from waze_users import add_user_line, user_poll_lines, note_presence
+
+    line = add_user_line(
+        {
+            "id": 2001,
+            "name": "lea",
+            "lon": 6.4847,
+            "lat": 46.36458,
+            "speed": 4.5,
+            "azimuth": 90,
+            "mood": 1,
+        }
+    )
+    parts = line.split(",")
+    assert parts[0] == "AddUser"
+    assert parts[1] == "2001"
+    assert parts[2] == "lea"
+    assert parts[3] == "6484700"
+    note_presence("192.168.1.60", b"At,6.48470,46.36458,0.0,12,90,-1,-1\n")
+    rows = user_poll_lines("192.168.1.99")
+    assert any(r.startswith("AddUser,") for r in rows)
 
 
 def test_downsample() -> None:
@@ -452,9 +519,13 @@ def test_major_ways() -> None:
 def test_street_zoom_not_yellow() -> None:
     from wazemap import ROAD_PRIMARY, ROAD_SECONDARY, ROAD_STREET, display_category
 
-    assert display_category(ROAD_PRIMARY, 0) == ROAD_STREET
-    assert display_category(ROAD_SECONDARY, 0) == ROAD_STREET
+    assert display_category(ROAD_PRIMARY, 0) == ROAD_PRIMARY
+    assert display_category(ROAD_SECONDARY, 0) == ROAD_SECONDARY
     assert display_category(ROAD_PRIMARY, 2) == ROAD_PRIMARY
+    from wazemap import OSM_CATEGORY, ROAD_STREET
+
+    assert OSM_CATEGORY["tertiary"] == ROAD_STREET
+    assert OSM_CATEGORY["residential"] == ROAD_STREET
 
 
 def test_no_negative_line_stubs() -> None:
@@ -537,6 +608,10 @@ def main() -> int:
         test_pin_reaches_house_at_start,
         test_resample_caps_points,
         test_osrm_steps_by_distance,
+        test_osrm_steps_clear_geometry_turns,
+        test_drop_kinks_skips_short_hook,
+        test_resample_keeps_corner,
+        test_wazers_adduser,
         test_downsample,
         test_trace_joins_only_connected,
         test_from_node_on_wire,

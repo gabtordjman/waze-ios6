@@ -4,23 +4,94 @@
 Client : At + ReportAlert (RealtimeNet.c RTNet_ReportAlertAtPosition).
 Carte  : AddAlert (RealtimeNetRec.c AddAlert) — coords en micro-degrés.
 Ack    : ReportAlertRes,<points>,<title>,<msg>
+Points : UpdateUserPoints,<delta> (RealtimeNetRec.c).
+Durée  : ~30 min, puis RmAlert. Fichier logs/alerts.json pour survivre
+à un relance du catcher.
 """
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 from threading import Lock
+
+ROOT = Path(__file__).resolve().parents[1]
+STORE_FILE = ROOT / "logs" / "alerts.json"
+POINTS_FILE = ROOT / "logs" / "points.json"
+ALERT_TTL = 1800
+REPORT_POINTS = 6
+START_POINTS = 100
 
 _lock = Lock()
 _next_id = 1001
 _store: dict[int, dict] = {}
+_points = START_POINTS
+_loaded = False
+
+
+def _ensure_loaded() -> None:
+    global _next_id, _points, _loaded
+    if _loaded:
+        return
+    _loaded = True
+    try:
+        if STORE_FILE.is_file():
+            data = json.loads(STORE_FILE.read_text(encoding="utf-8"))
+            for rec in data.get("alerts") or []:
+                aid = int(rec["id"])
+                _store[aid] = rec
+                _next_id = max(_next_id, aid + 1)
+    except Exception:
+        pass
+    try:
+        if POINTS_FILE.is_file():
+            _points = int(json.loads(POINTS_FILE.read_text(encoding="utf-8")).get("points") or START_POINTS)
+    except Exception:
+        _points = START_POINTS
+
+
+def _save_locked() -> None:
+    STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        STORE_FILE.write_text(
+            json.dumps({"alerts": list(_store.values())}, indent=0),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    try:
+        POINTS_FILE.write_text(
+            json.dumps({"points": _points}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def reset_store() -> None:
-    global _next_id
+    global _next_id, _points, _loaded
     with _lock:
         _store.clear()
         _next_id = 1001
+        _points = START_POINTS
+        _loaded = True
+        _save_locked()
+
+
+def total_points() -> int:
+    _ensure_loaded()
+    with _lock:
+        return int(_points)
+
+
+def add_points(delta: int) -> int:
+    global _points
+    _ensure_loaded()
+    with _lock:
+        _points = max(0, int(_points) + int(delta))
+        _save_locked()
+        return _points
 
 
 def _ascii(s: str) -> str:
@@ -113,9 +184,25 @@ def add_alert_line(alert: dict) -> str:
     )
 
 
+def _expire_locked(now: float | None = None) -> list[int]:
+    now = time.time() if now is None else now
+    gone = [
+        aid
+        for aid, rec in list(_store.items())
+        if now - float(rec.get("when") or 0) > ALERT_TTL
+    ]
+    for aid in gone:
+        _store.pop(aid, None)
+    if gone:
+        _save_locked()
+    return gone
+
+
 def store_report(parsed: dict) -> dict:
     global _next_id
+    _ensure_loaded()
     with _lock:
+        _expire_locked()
         aid = _next_id
         _next_id += 1
         rec = {
@@ -130,30 +217,48 @@ def store_report(parsed: dict) -> dict:
             "when": int(time.time()),
         }
         _store[aid] = rec
+        _save_locked()
         return rec
 
 
 def remove_alert(aid: int) -> bool:
+    _ensure_loaded()
     with _lock:
-        return _store.pop(aid, None) is not None
+        ok = _store.pop(aid, None) is not None
+        if ok:
+            _save_locked()
+        return ok
+
+
+def live_alert_lines() -> list[str]:
+    _ensure_loaded()
+    with _lock:
+        gone = _expire_locked()
+        live = [add_alert_line(a) for a in _store.values()]
+    return [f"RmAlert,{aid}" for aid in gone] + live
 
 
 def all_add_alert_lines() -> list[str]:
-    with _lock:
-        return [add_alert_line(a) for a in _store.values()]
+    return live_alert_lines()
 
 
-def report_alert_response(parsed: dict) -> list[str]:
+def report_alert_response(parsed: dict, lang: str = "fra") -> list[str]:
     rec = store_report(parsed)
+    add_points(REPORT_POINTS)
+    if lang == "eng":
+        title, msg = "Thank you", "Report received"
+    else:
+        title, msg = "Merci !", "Signalement recu"
     return [
         "RC,200,OK",
-        "ReportAlertRes,6,Thank you,Report received",
+        f"ReportAlertRes,{REPORT_POINTS},{title},{msg}",
+        f"UpdateUserPoints,{REPORT_POINTS}",
         add_alert_line(rec),
     ]
 
 
 def poll_alert_lines() -> list[str]:
-    extra = all_add_alert_lines()
+    extra = live_alert_lines()
     if not extra:
         return ["RC,200,OK"]
     return ["RC,200,OK", *extra]

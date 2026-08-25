@@ -139,12 +139,11 @@ def max_category(scale: int) -> int:
 
 
 def display_category(category: int, scale: int) -> int:
-    """Zoom rue : primary/secondary OSM en STREET (Waze les peint en jaune).
+    """Catégorie Waze d'origine : primary/secondary = bandes beige (D606).
 
-    Dézoom (échelle ≥ 2) : on garde primary/secondary pour voir les axes.
+    On ne rabaisse plus en STREET : ça aplatissait tout en blanc style OSM.
+    Les rues restent STREET ; les axes restent PRIMARY/SECONDARY.
     """
-    if scale == 0 and category in (ROAD_PRIMARY, ROAD_SECONDARY):
-        return ROAD_STREET
     return category
 
 
@@ -160,8 +159,8 @@ OSM_CATEGORY = {
     "primary_link": ROAD_RAMP,
     "secondary": ROAD_SECONDARY,
     "secondary_link": ROAD_SECONDARY,
-    "tertiary": ROAD_SECONDARY,
-    "tertiary_link": ROAD_SECONDARY,
+    "tertiary": ROAD_STREET,
+    "tertiary_link": ROAD_STREET,
     "residential": ROAD_STREET,
     "unclassified": ROAD_STREET,
     "living_street": ROAD_STREET,

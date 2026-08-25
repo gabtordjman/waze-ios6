@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=proto150-carte-20260824f
+"""CATCHER_REV=proto150-route-20260826h
 
 Deux protocoles, deux stratégies — le catcher détecte lequel parle le client.
 
@@ -69,7 +69,7 @@ except ImportError:
     def _note_tile_served(kind: str = "wzm") -> None:
         pass
 
-CATCHER_REV = "proto150-route-20260826f"
+CATCHER_REV = "proto150-route-20260826h"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -99,9 +99,11 @@ try:
     from waze_alerts import (
         parse_report_alert,
         parse_rm_alert,
+        live_alert_lines,
         poll_alert_lines,
         report_alert_response,
         rm_alert_response,
+        total_points,
     )
 except ImportError:
     def parse_report_alert(_body: bytes):
@@ -110,14 +112,32 @@ except ImportError:
     def parse_rm_alert(_body: bytes):
         return None
 
+    def live_alert_lines() -> list[str]:
+        return []
+
     def poll_alert_lines() -> list[str]:
         return ["RC,200,OK"]
 
-    def report_alert_response(_parsed: dict) -> list[str]:
+    def report_alert_response(_parsed: dict, lang: str = "fra") -> list[str]:
         return ["RC,200,OK"]
 
     def rm_alert_response(_aid: int) -> list[str]:
         return ["RC,200,OK"]
+
+    def total_points() -> int:
+        return 100
+
+try:
+    from waze_users import note_presence, scoreboard_html, user_poll_lines
+except ImportError:
+    def note_presence(_peer: str, _body: bytes) -> None:
+        pass
+
+    def user_poll_lines(_peer: str = "") -> list[str]:
+        return []
+
+    def scoreboard_html(_pts: int, _name: str = "ios6user", lang: str = "fra") -> bytes:
+        return b"<html><body>Scoreboard</body></html>"
 
 _ROUTE_IMPORT_ERR = ""
 try:
@@ -297,7 +317,7 @@ def _body_login_gpl(user: str, proto: int) -> tuple[str, bytes]:
                 "1",                    # iServerID     (≠ -1)
                 f"waze{user}cookie01",  # ServerCookie  (63 max)
                 "1",                    # iMyRanking
-                "100",                  # iMyTotalPoints
+                str(total_points()),    # iMyTotalPoints
                 "1",                    # iMyRating
                 "1",                    # iMyPreviousRanking
                 "0",                    # iMyAddon
@@ -439,9 +459,9 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Download", "Langs", f"{BASE}/resources/langs/"),
         ("Download", "Images", f"{BASE}/resources/images/"),
         ("Download", "Sound", f"{BASE}/resources/sounds/"),
-        ("Download", "Sound_Ver", "1.1"),
-        ("Download", "Config_Ver", "1.1"),
-        ("Download", "Langs_Ver", "1.1"),
+        ("Download", "Sound_Ver", "1.3"),
+        ("Download", "Config_Ver", "1.3"),
+        ("Download", "Langs_Ver", "1.3"),
         # Tuiles HTTP : le client complète la carte au pan/dézoom sans SSH.
         ("Download", "Tiles", f"{BASE}/tiles"),
         # TTS WAS bloque le login (« Preparing navigation voice »). MP3 Minimal à la place.
@@ -451,25 +471,41 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Navigation", "Guidance type default", "Minimal"),
         ("Navigation", "Navigation guidance type", "Minimal"),
         ("Prompts", "Name", "fra"),
+        ("Prompts", "Updated new", "no"),
         ("System", "Language", "fra"),
         ("System", "Default Language", "fra"),
-        # Épaisseur : roadmap_layer.c lit Streets.Thickness dans le schema,
-        # mais on_server_config déclare la même clé en preferences (cherchée
-        # avant le schema). On ne touche pas aux couleurs — le style reste.
+        # Look Waze 2.4 (capture Fontainebleau) : fond gris-bleu, rues grises
+        # fines, axes beige — pas le bleu/blanc OSM. Catégories du schema GPL.
+        ("Map", "Background", "#C5D0D4"),
         ("Streets", "Thickness", "1"),
+        ("Streets", "Color", "#9A9A9A"),
         ("Streets", "Delta1", "1"),
-        ("Secondary", "Thickness", "1"),
-        ("Secondary", "Delta1", "1"),
-        ("Primary", "Thickness", "2"),
-        ("Primary", "Delta1", "1"),
-        ("Highways", "Thickness", "2"),
-        ("Highways", "Delta1", "1"),
-        ("Freeways", "Thickness", "2"),
-        ("Freeways", "Delta1", "1"),
+        ("Streets", "Color1", "#E6E6E6"),
+        ("Streets", "LabelColor", "#222222"),
+        ("Secondary", "Thickness", "2"),
+        ("Secondary", "Color", "#C4A86A"),
+        ("Secondary", "Delta1", "2"),
+        ("Secondary", "Color1", "#E6D09A"),
+        ("Primary", "Thickness", "3"),
+        ("Primary", "Color", "#C4A050"),
+        ("Primary", "Delta1", "2"),
+        ("Primary", "Color1", "#E8C86A"),
+        ("Highways", "Thickness", "3"),
+        ("Highways", "Color", "#C4A050"),
+        ("Highways", "Delta1", "2"),
+        ("Highways", "Color1", "#E8C86A"),
+        ("Freeways", "Thickness", "3"),
+        ("Freeways", "Color", "#C4A050"),
+        ("Freeways", "Delta1", "2"),
+        ("Freeways", "Color1", "#E8C86A"),
         ("Ramps", "Thickness", "1"),
+        ("Ramps", "Color", "#B0B0B0"),
         ("Ramps", "Delta1", "1"),
-        ("Exit", "Thickness", "1"),
+        ("Ramps", "Color1", "#E6E6E6"),
+        ("Exit", "Thickness", "2"),
+        ("Exit", "Color", "#C4A86A"),
         ("Exit", "Delta1", "1"),
+        ("Exit", "Color1", "#E6D09A"),
         ("Download", "Source", f"{BASE}/maps"),
         ("Map", "Static County", str(WORLD_FIPS)),
         ("Download", "Enabled", "no"),
@@ -480,6 +516,9 @@ def _server_params() -> list[tuple[str, str, str]]:
         # RoutingRequest en V2 → réponse préfixée ack\r\n (voir _ack_for).
         ("Realtime", "Web-Service V2 Commands", "RoutingRequest"),
         ("Realtime", "Web-Service V2 Suffix", ""),
+        # iPhone WEB_SCOREBOARD ouvre http://www.waze.com (roadmap_scoreboard.m).
+        ("Scoreboard", "Feature enabled", "yes"),
+        ("Scoreboard", "Url", f"{BASE}/scoreboard"),
     ]
 
 
@@ -595,7 +634,7 @@ def _note_map_displayed(req_body: bytes) -> None:
     _schedule_map_expand(lon, lat)
 
 
-def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
+def _classify(req_body: bytes, path: str = "", peer: str = "") -> tuple[str, bytes, bool]:
     low = req_body.lower()
     pl = path.lower()
     cmds = _cmds(req_body)
@@ -715,10 +754,13 @@ def _classify(req_body: bytes, path: str = "") -> tuple[str, bytes, bool]:
         return "RmAlert", _lines(rm_alert_response(aid)), False
 
     if cset & {"at", "seeme"}:
-        rows = poll_alert_lines()
-        if len(rows) > 1:
-            _log(f"  → {len(rows) - 1} alerte(s) carte")
-            return "Realtime→AddAlert", _lines(rows), False
+        note_presence(peer, req_body)
+        extra = live_alert_lines() + user_poll_lines(peer)
+        if extra:
+            n_al = sum(1 for r in extra if r.startswith("AddAlert"))
+            n_u = sum(1 for r in extra if r.startswith("AddUser"))
+            _log(f"  → {n_al} alerte(s), {n_u} wazer(s)")
+            return "Realtime→live", _lines(["RC,200,OK", *extra]), False
 
     return "Realtime→RC200", BODY_RC, False
 
@@ -815,15 +857,21 @@ def _resolve_resource(path: str) -> Path | None:
         for p in parts:
             if p in ("eng", "fra", "heb"):
                 lang = p
-        for folder in (
-            RES / "resources" / "sounds" / "1.0" / lang,
-            RES / "sounds" / "1.0" / lang,
-            RES / "sounds" / lang,
-        ):
-            if stem:
-                candidates.append(folder / stem)
-                candidates.append(folder / f"{stem}.mp3")
-            candidates.append(folder / name)
+        langs = [lang]
+        if lang == "eng":
+            langs.append("fra")
+        elif lang == "fra":
+            langs.append("eng")
+        for lang in langs:
+            for folder in (
+                RES / "resources" / "sounds" / "1.0" / lang,
+                RES / "sounds" / "1.0" / lang,
+                RES / "sounds" / lang,
+            ):
+                if stem:
+                    candidates.append(folder / stem)
+                    candidates.append(folder / f"{stem}.mp3")
+                candidates.append(folder / name)
     if name == "prompts.conf":
         candidates.extend(
             [
@@ -851,6 +899,8 @@ def _guess_ct(path: str, data: bytes) -> str:
         return "image/jpeg"
     if low.endswith(".gif"):
         return "image/gif"
+    if low.endswith((".html", ".htm")):
+        return "text/html; charset=utf-8"
     if low.endswith((".conf", ".txt", ".lang")) or b"lang." in path.encode():
         return "text/plain; charset=utf-8"
     if "sounds" in low or low.endswith(".mp3"):
@@ -858,6 +908,21 @@ def _guess_ct(path: str, data: bytes) -> str:
     if data[:4] == b"\x89PNG":
         return "image/png"
     return "application/octet-stream"
+
+
+def _is_scoreboard_get(path: str, head: bytes) -> bool:
+    p = path.lower().split("?", 1)[0].rstrip("/") or "/"
+    if p in ("/scoreboard", "/was/mvc/scoreboard") or p.startswith("/was/"):
+        return True
+    host = ""
+    for line in head.split(b"\r\n"):
+        if line.lower().startswith(b"host:"):
+            host = line.split(b":", 1)[1].decode("latin1", "replace").strip().lower()
+            break
+    if "waze.com" in host and not host.startswith("rt."):
+        if p in ("/", "") or "scoreboard" in p:
+            return True
+    return False
 
 
 def _handle_conn(conn: socket.socket, scheme: str) -> None:
@@ -896,7 +961,7 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 or b"q=" in req_body[:120].lower()
             )
             if is_rts:
-                label, body, close = _classify(req_body, path=path)
+                label, body, close = _classify(req_body, path=path, peer=peer)
                 ack = _ack_for(path, req_body=req_body)
                 resp = _http_envelope(body, ack=ack, close=close)
                 conn.sendall(resp)
@@ -913,6 +978,18 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 continue
 
             if "GET" in first:
+                if _is_scoreboard_get(path, head):
+                    html = scoreboard_html(total_points(), "ios6user", "fra")
+                    _log(f"  ★ scoreboard {path}")
+                    conn.sendall(
+                        _http_envelope(
+                            html,
+                            ack=b"",
+                            close=False,
+                            ctype="text/html; charset=utf-8",
+                        )
+                    )
+                    continue
                 is_tile = "/tiles" in path.lower()
                 if is_tile:
                     # Pas de stub vide : ça pollue le cache iOS (tuiles France

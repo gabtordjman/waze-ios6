@@ -73,11 +73,17 @@ else
   exit 1
 fi
 
-SOUND_SRC="$ROOT/mitm/fake-resources/resources/sounds/1.0/eng"
-if [ -d "$SOUND_SRC" ]; then
-  echo "Envoi prompts…"
+FRA_SRC="$ROOT/mitm/fake-resources/resources/sounds/1.0/fra"
+ENG_SRC="$ROOT/mitm/fake-resources/resources/sounds/1.0/eng"
+if [ -d "$FRA_SRC" ]; then
+  echo "Envoi voix française…"
+  ssh $SSH_OPTS "root@${PHONE}" "rm -rf /tmp/waze-sound-fra; mkdir -p /tmp/waze-sound-fra"
+  scp $SSH_OPTS "$FRA_SRC"/* "root@${PHONE}:/tmp/waze-sound-fra/"
+fi
+if [ -d "$ENG_SRC" ]; then
+  echo "Envoi voix anglaise…"
   ssh $SSH_OPTS "root@${PHONE}" "rm -rf /tmp/waze-sound-eng; mkdir -p /tmp/waze-sound-eng"
-  scp $SSH_OPTS "$SOUND_SRC"/* "root@${PHONE}:/tmp/waze-sound-eng/"
+  scp $SSH_OPTS "$ENG_SRC"/* "root@${PHONE}:/tmp/waze-sound-eng/"
 fi
 
 sed 's/\r$//' "$ROOT/scripts/waze-cache-maps.sh" | ssh $SSH_OPTS "root@${PHONE}" "cat > /tmp/waze-cache-maps.sh"

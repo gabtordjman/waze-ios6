@@ -73,6 +73,8 @@ killall -9 Waze waze 2>/dev/null
 [ -f "$PREF" ] || cp "$BUNDLE" "$PREF"
 
 grep -q 'rt.waze.com' /etc/hosts 2>/dev/null || echo "$PC rt.waze.com" >> /etc/hosts
+grep -q 'www.waze.com' /etc/hosts 2>/dev/null || echo "$PC www.waze.com" >> /etc/hosts
+grep -q '[[:space:]]waze.com' /etc/hosts 2>/dev/null || echo "$PC waze.com" >> /etc/hosts
 
 grep -v '^System.ServerId:' "$PREF" | \
 grep -v '^GeoConfig.version:' | \
@@ -122,6 +124,8 @@ grep -v '^Ramps.' | \
 grep -v '^Exit.' | \
 grep -v '^Tiles.Last Session:' | \
 grep -v '^Tiles.Loading session lifetime:' | \
+grep -v '^Scoreboard.Feature enabled:' | \
+grep -v '^Scoreboard.Url:' | \
 grep -v 'Secho' | \
 grep -v 'Webho' > /tmp/wpref.n
 
@@ -159,34 +163,40 @@ echo "Map.Static County: 77001" >> /tmp/wpref.n
 echo "Editor.Gray scale: no" >> /tmp/wpref.n
 echo "Display.Auto night mode: no" >> /tmp/wpref.n
 echo "Display.Map sub_skin: day" >> /tmp/wpref.n
-echo "Map.Background: #EFEBE3" >> /tmp/wpref.n
+echo "Map.Background: #C5D0D4" >> /tmp/wpref.n
 echo "Map.Labels: yes" >> /tmp/wpref.n
 echo "Navigation.RouteColor: #9933FF" >> /tmp/wpref.n
 echo "Streets.Thickness: 1" >> /tmp/wpref.n
-echo "Streets.Color: #8EB8D8" >> /tmp/wpref.n
+echo "Streets.Color: #9A9A9A" >> /tmp/wpref.n
 echo "Streets.Delta1: 1" >> /tmp/wpref.n
-echo "Streets.Color1: #FFFFFF" >> /tmp/wpref.n
+echo "Streets.Color1: #E6E6E6" >> /tmp/wpref.n
 echo "Streets.LabelColor: #222222" >> /tmp/wpref.n
-echo "Secondary.Thickness: 1" >> /tmp/wpref.n
-echo "Secondary.Color: #9AABB8" >> /tmp/wpref.n
-echo "Secondary.Delta1: 1" >> /tmp/wpref.n
-echo "Secondary.Color1: #E8E8E8" >> /tmp/wpref.n
-echo "Primary.Thickness: 2" >> /tmp/wpref.n
-echo "Primary.Color: #A0A8B0" >> /tmp/wpref.n
-echo "Primary.Delta1: 1" >> /tmp/wpref.n
-echo "Primary.Color1: #D4D4D4" >> /tmp/wpref.n
-echo "Highways.Thickness: 2" >> /tmp/wpref.n
-echo "Highways.Delta1: 1" >> /tmp/wpref.n
-echo "Freeways.Thickness: 2" >> /tmp/wpref.n
-echo "Freeways.Color: #B0B0B0" >> /tmp/wpref.n
-echo "Freeways.Delta1: 1" >> /tmp/wpref.n
-echo "Freeways.Color1: #C8C8C8" >> /tmp/wpref.n
+echo "Secondary.Thickness: 2" >> /tmp/wpref.n
+echo "Secondary.Color: #C4A86A" >> /tmp/wpref.n
+echo "Secondary.Delta1: 2" >> /tmp/wpref.n
+echo "Secondary.Color1: #E6D09A" >> /tmp/wpref.n
+echo "Primary.Thickness: 3" >> /tmp/wpref.n
+echo "Primary.Color: #C4A050" >> /tmp/wpref.n
+echo "Primary.Delta1: 2" >> /tmp/wpref.n
+echo "Primary.Color1: #E8C86A" >> /tmp/wpref.n
+echo "Highways.Thickness: 3" >> /tmp/wpref.n
+echo "Highways.Color: #C4A050" >> /tmp/wpref.n
+echo "Highways.Delta1: 2" >> /tmp/wpref.n
+echo "Highways.Color1: #E8C86A" >> /tmp/wpref.n
+echo "Freeways.Thickness: 3" >> /tmp/wpref.n
+echo "Freeways.Color: #C4A050" >> /tmp/wpref.n
+echo "Freeways.Delta1: 2" >> /tmp/wpref.n
+echo "Freeways.Color1: #E8C86A" >> /tmp/wpref.n
 echo "Ramps.Thickness: 1" >> /tmp/wpref.n
-echo "Ramps.Color: #9BB8C8" >> /tmp/wpref.n
+echo "Ramps.Color: #B0B0B0" >> /tmp/wpref.n
 echo "Ramps.Delta1: 1" >> /tmp/wpref.n
-echo "Ramps.Color1: #FFFFFF" >> /tmp/wpref.n
-echo "Exit.Thickness: 1" >> /tmp/wpref.n
+echo "Ramps.Color1: #E6E6E6" >> /tmp/wpref.n
+echo "Exit.Thickness: 2" >> /tmp/wpref.n
+echo "Exit.Color: #C4A86A" >> /tmp/wpref.n
 echo "Exit.Delta1: 1" >> /tmp/wpref.n
+echo "Exit.Color1: #E6D09A" >> /tmp/wpref.n
+echo "Scoreboard.Feature enabled: yes" >> /tmp/wpref.n
+echo "Scoreboard.Url: http://$PC/scoreboard" >> /tmp/wpref.n
 cp /tmp/wpref.n "$PREF"
 cp /tmp/wpref.n "$BUNDLE"
 
@@ -221,19 +231,24 @@ echo "Display.Auto night mode: no" >> /tmp/wuser.n
 echo "Display.Map sub_skin: day" >> /tmp/wuser.n
 cp /tmp/wuser.n "$USERF"
 
-# Prompts MP3 Minimal → {user}/sound/fra/ (roadmap_sound.m + roadmap_prompts_exist).
-SOUND_DST="$CONTAINER/Documents/sound/fra"
-mkdir -p "$SOUND_DST"
-if [ -d /tmp/waze-sound-fra/fra ]; then
-  cp /tmp/waze-sound-fra/fra/* "$SOUND_DST/" 2>/dev/null || true
-elif [ -d /tmp/waze-sound-fra ]; then
-  cp /tmp/waze-sound-fra/* "$SOUND_DST/" 2>/dev/null || true
-elif [ -d /tmp/waze-sound-eng/eng ]; then
-  cp /tmp/waze-sound-eng/eng/* "$SOUND_DST/" 2>/dev/null || true
-elif [ -d /tmp/waze-sound-eng ]; then
-  cp /tmp/waze-sound-eng/* "$SOUND_DST/" 2>/dev/null || true
-fi
-echo "Prompts → $SOUND_DST ($(ls "$SOUND_DST" 2>/dev/null | wc -l) fichiers)"
+# Prompts : lecture iOS = Documents/sound/<Prompts.Name>/ (roadmap_sound.m).
+# fra et eng sont des packs distincts — ne plus copier le français sur l'anglais.
+copy_prompts() {
+  src="$1"
+  dst="$2"
+  mkdir -p "$dst"
+  [ -d "$src" ] || return 0
+  if [ -d "$src/fra" ]; then
+    cp "$src/fra/"* "$dst/" 2>/dev/null || true
+  elif [ -d "$src/eng" ]; then
+    cp "$src/eng/"* "$dst/" 2>/dev/null || true
+  else
+    cp "$src/"* "$dst/" 2>/dev/null || true
+  fi
+  echo "Prompts → $dst ($(ls "$dst" 2>/dev/null | wc -l) fichiers)"
+}
+copy_prompts /tmp/waze-sound-fra "$CONTAINER/Documents/sound/fra"
+copy_prompts /tmp/waze-sound-eng "$CONTAINER/Documents/sound/eng"
 if id mobile >/dev/null 2>&1; then
   chown -R mobile:mobile "$CONTAINER/Documents/sound" 2>/dev/null || true
 fi

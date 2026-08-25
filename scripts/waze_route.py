@@ -109,18 +109,37 @@ def _osrm_maneuver(man: dict) -> int:
 def _resample_pts(
     pts: list[tuple[int, int]], target: int
 ) -> list[tuple[int, int]]:
-    """Garde début + fin, réduit vraiment à `target` points (pas un step=1)."""
-    if len(pts) <= target:
+    """Garde début, fin, et les coudes. Un step uniforme lissait trop les courbes."""
+    n = len(pts)
+    if n <= target:
         return pts
-    out = [pts[0]]
-    step = (len(pts) - 1) / (target - 1)
-    for k in range(1, target - 1):
-        p = pts[int(round(k * step))]
-        if p != out[-1]:
-            out.append(p)
-    if pts[-1] != out[-1]:
-        out.append(pts[-1])
-    return out
+    must = {0, n - 1}
+    for i in range(1, n - 1):
+        b1 = _bearing(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1])
+        b2 = _bearing(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1])
+        d = (b2 - b1 + 540.0) % 360.0 - 180.0
+        if abs(d) >= 10:
+            must.add(i)
+    if len(must) >= target:
+        ordered = sorted(must)
+        picked = [ordered[0]]
+        step = (len(ordered) - 1) / max(target - 1, 1)
+        for k in range(1, target - 1):
+            picked.append(ordered[min(int(round(k * step)), len(ordered) - 1)])
+        picked.append(ordered[-1])
+        out: list[tuple[int, int]] = []
+        for i in picked:
+            if not out or pts[i] != out[-1]:
+                out.append(pts[i])
+        return out
+    chosen = set(must)
+    rest = [i for i in range(n) if i not in must]
+    extra = target - len(must)
+    if rest and extra > 0:
+        step = len(rest) / extra
+        for k in range(extra):
+            chosen.add(rest[min(int(k * step), len(rest) - 1)])
+    return [pts[i] for i in sorted(chosen)]
 
 
 def osrm_route(
@@ -156,7 +175,7 @@ def osrm_route(
         all_pts.append(dest)
     # Assez dense pour coller aux rues, assez court pour le fil RoutePoints.
     # Un step entier laissait 458 pts (le client retente : réponse trop longue).
-    target = max(60, min(140, int(length_m / 15) + 2))
+    target = max(80, min(140, int(length_m / 12) + 2))
     pts = _resample_pts(all_pts, target)
 
     steps: list[dict] = []
@@ -631,7 +650,7 @@ def _bfs_bridge(
     geom: bool = False,
 ) -> list[tuple]:
     """Lignes du couloir qui relient prev à nxt (nœuds .wzm / bord de tuile)."""
-    if _connected(prev, nxt) or (geom and _geom_join(prev, nxt)):
+    if _connected(prev, nxt):
         return []
     allowed = {prev[0], nxt[0]}
     nodes = [r for r in pool if r[0] in allowed]
@@ -640,7 +659,8 @@ def _bfs_bridge(
         if len(r) > 11:
             inc[(int(r[0]), int(r[10]))].append(r)
             inc[(int(r[0]), int(r[11]))].append(r)
-    join_u = JOIN_U * 2 if geom else JOIN_U
+    join_u = JOIN_U
+    touch_u = 120
 
     def neighbors(row: tuple) -> list[tuple]:
         out: list[tuple] = []
@@ -657,7 +677,7 @@ def _bfs_bridge(
             if o[0] != row[0] and _min_end_gap(row, o) < join_u:
                 seen.add(o[:2])
                 out.append(o)
-            elif geom and o[0] == row[0] and _min_end_gap(row, o) < join_u:
+            elif geom and o[0] == row[0] and _min_end_gap(row, o) < touch_u:
                 seen.add(o[:2])
                 out.append(o)
         return out
@@ -710,7 +730,7 @@ def _fill_along_route(
     pool = [r for r in index if _on_corridor(r, pts)]
     out = [raw[0]]
     for nxt in raw[1:]:
-        out.extend(_bfs_bridge(out[-1], nxt, pool))
+        out.extend(_bfs_bridge(out[-1], nxt, pool, geom=True))
         out.append(nxt)
     return out
 
@@ -1030,6 +1050,7 @@ def _match_segments(
     raw = _fill_along_route(raw, index, pts)
     raw = _pin_ends(raw, index, pts)
     raw = _fill_along_route(raw, index, pts)
+    raw = _drop_kinks(raw, pts)
 
     if not raw:
         return []
@@ -1091,21 +1112,56 @@ def _match_segments(
         if not segs[i]["name"] and segs[i - 1]["name"]:
             segs[i]["name"] = segs[i - 1]["name"]
 
+    # Les virages viennent d'OSRM, pas de la géométrie .wzm (morceaux de 30 m
+    # et courbes = faux KEEP / ronds-points dans la barre verte).
     for i in range(len(segs) - 1):
-        a, b = segs[i], segs[i + 1]
-        if i > 0:
-            p = segs[i - 1]
-            b1 = _bearing(p["mlon"], p["mlat"], a["mlon"], a["mlat"])
-        else:
-            b1 = _bearing(a["mlon"], a["mlat"], b["mlon"], b["mlat"])
-        b2 = _bearing(a["mlon"], a["mlat"], b["mlon"], b["mlat"])
-        name_change = bool(b["name"] and a["name"] != b["name"])
-        a["instr"] = _turn_instr(b1, b2, name_change=name_change)
-        a["dest_name"] = b["name"] or a["name"]
-
+        segs[i]["instr"] = CONTINUE
+        segs[i]["dest_name"] = segs[i + 1]["name"] or segs[i]["name"]
     segs[-1]["instr"] = APPROACHING_DESTINATION
     segs[-1]["dest_name"] = segs[-1]["name"]
     return segs
+
+
+def _drop_kinks(
+    raw: list[tuple], pts: list[tuple[int, int]]
+) -> list[tuple]:
+    """Enlève un crochet court (~30 m) si prev et next se rejoignent sans lui.
+
+    Ne touche pas un vrai virage (long, sur l'OSRM) ni un pont nécessaire
+    (prev et next ne se touchent pas).
+    """
+    if len(raw) < 3 or len(pts) < 2:
+        return raw
+    out = list(raw)
+    i = 1
+    while i < len(out) - 1:
+        prev, cur, nxt = out[i - 1], out[i], out[i + 1]
+        if not (_geom_join(prev, nxt) or _shares_node(prev, nxt)):
+            i += 1
+            continue
+        alen = int(cur[5]) if len(cur) > 5 else 0
+        short = alen < 40
+        hp = _bearing(prev[8], prev[9], prev[6], prev[7])
+        hc = _bearing(cur[8], cur[9], cur[6], cur[7])
+        hn = _bearing(nxt[8], nxt[9], nxt[6], nxt[7])
+
+        def _hd(a: float, b: float) -> float:
+            return min(_ang_diff(a, b), _ang_diff(a, (b + 180.0) % 360.0))
+
+        hook = _hd(hp, hc) >= 40 and _hd(hc, hn) >= 40
+        dcur = _dist_to_poly(cur[3], cur[4], pts)
+        dnb = min(
+            _dist_to_poly(prev[3], prev[4], pts),
+            _dist_to_poly(nxt[3], nxt[4], pts),
+        )
+        off = dcur > dnb + 80 and dcur > CORRIDOR_U
+        if (short and (hook or off)) or (hook and off):
+            del out[i]
+            if i > 1:
+                i -= 1
+            continue
+        i += 1
+    return out
 
 
 def _apply_osrm_steps(segs: list[dict], steps: list[dict]) -> None:
@@ -1114,7 +1170,12 @@ def _apply_osrm_steps(segs: list[dict], steps: list[dict]) -> None:
     Un snap GPS (seuil 80 mµ°) ratait presque tout → un seul groupe CONTINUE
     jusqu'à APPROACHING_DESTINATION (« Continue 4468ft approaching destination »).
     """
-    if not segs or not steps:
+    if not segs:
+        return
+    for s in segs[:-1]:
+        s["instr"] = CONTINUE
+    segs[-1]["instr"] = APPROACHING_DESTINATION
+    if not steps:
         return
     cum: list[int] = []
     total = 0
