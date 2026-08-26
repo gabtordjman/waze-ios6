@@ -73,8 +73,12 @@ killall -9 Waze waze 2>/dev/null
 [ -f "$PREF" ] || cp "$BUNDLE" "$PREF"
 
 grep -q 'rt.waze.com' /etc/hosts 2>/dev/null || echo "$PC rt.waze.com" >> /etc/hosts
-grep -q 'www.waze.com' /etc/hosts 2>/dev/null || echo "$PC www.waze.com" >> /etc/hosts
-grep -q '[[:space:]]waze.com' /etc/hosts 2>/dev/null || echo "$PC waze.com" >> /etc/hosts
+# Plus de www.waze.com : le menu Classement iPhone ouvre ça en dur.
+if [ -f /etc/hosts ]; then
+  grep -v 'www.waze.com' /etc/hosts | grep -v ' waze.com$' > /tmp/hosts.n
+  cat /tmp/hosts.n > /etc/hosts 2>/dev/null || true
+  grep -q 'rt.waze.com' /etc/hosts 2>/dev/null || echo "$PC rt.waze.com" >> /etc/hosts
+fi
 
 grep -v '^System.ServerId:' "$PREF" | \
 grep -v '^GeoConfig.version:' | \
@@ -165,7 +169,7 @@ echo "Prompts.Name: fra" >> /tmp/wpref.n
 echo "System.Language: fra" >> /tmp/wpref.n
 echo "System.Default Language: fra" >> /tmp/wpref.n
 echo "Map.Static County: 77001" >> /tmp/wpref.n
-echo "Editor.Gray scale: no" >> /tmp/wpref.n
+echo "Editor.Gray scale: yes" >> /tmp/wpref.n
 echo "Display.Auto night mode: no" >> /tmp/wpref.n
 echo "Display.Map sub_skin: day" >> /tmp/wpref.n
 echo "Map.Background: #C5D0D4" >> /tmp/wpref.n
@@ -200,8 +204,8 @@ echo "Exit.Thickness: 2" >> /tmp/wpref.n
 echo "Exit.Color: #C4A86A" >> /tmp/wpref.n
 echo "Exit.Delta1: 1" >> /tmp/wpref.n
 echo "Exit.Color1: #E6D09A" >> /tmp/wpref.n
-echo "Scoreboard.Feature enabled: yes" >> /tmp/wpref.n
-echo "Scoreboard.Url: http://$PC/scoreboard" >> /tmp/wpref.n
+echo "Scoreboard.Feature enabled: no" >> /tmp/wpref.n
+echo "User.Show points ticker: yes" >> /tmp/wpref.n
 cp /tmp/wpref.n "$PREF"
 cp /tmp/wpref.n "$BUNDLE"
 
@@ -218,7 +222,8 @@ grep -v '^Prompts.Name:' | \
 grep -v '^System.Language:' | \
 grep -v '^System.Default Language:' | \
 grep -v '^Display.Auto night mode:' | \
-  grep -v '^Display.Map sub_skin:' > /tmp/wuser.n
+grep -v '^Display.Map sub_skin:' | \
+grep -v '^User.Show points ticker:' > /tmp/wuser.n
 else
   cp /dev/null /tmp/wuser.n
 fi
@@ -234,6 +239,7 @@ echo "System.Language: fra" >> /tmp/wuser.n
 echo "System.Default Language: fra" >> /tmp/wuser.n
 echo "Display.Auto night mode: no" >> /tmp/wuser.n
 echo "Display.Map sub_skin: day" >> /tmp/wuser.n
+echo "User.Show points ticker: yes" >> /tmp/wuser.n
 cp /tmp/wuser.n "$USERF"
 
 # Prompts : lecture iOS = Documents/sound/<Prompts.Name>/ (roadmap_sound.m).

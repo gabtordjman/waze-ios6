@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CATCHER_REV=proto150-route-20260826h
+"""CATCHER_REV=proto150-route-20260826i
 
 Deux protocoles, deux stratégies — le catcher détecte lequel parle le client.
 
@@ -69,7 +69,7 @@ except ImportError:
     def _note_tile_served(kind: str = "wzm") -> None:
         pass
 
-CATCHER_REV = "proto150-route-20260826h"
+CATCHER_REV = "proto150-route-20260826i"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -132,16 +132,13 @@ except ImportError:
         return 0
 
 try:
-    from waze_users import note_presence, scoreboard_html, user_poll_lines
+    from waze_users import note_presence, user_poll_lines
 except ImportError:
     def note_presence(_peer: str, _body: bytes) -> None:
         pass
 
     def user_poll_lines(_peer: str = "") -> list[str]:
         return []
-
-    def scoreboard_html(_pts: int, _name: str = "ios6user", lang: str = "fra", **kwargs) -> bytes:
-        return b"<html><body>Scoreboard</body></html>"
 
 _ROUTE_IMPORT_ERR = ""
 try:
@@ -464,7 +461,7 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Download", "Images", f"{BASE}/resources/images/"),
         ("Download", "Sound", f"{BASE}/resources/sounds/"),
         ("Download", "Sound_Ver", "1.3"),
-        ("Download", "Config_Ver", "1.3"),
+        ("Download", "Config_Ver", "1.4"),
         ("Download", "Langs_Ver", "1.3"),
         # Tuiles HTTP : le client complète la carte au pan/dézoom sans SSH.
         ("Download", "Tiles", f"{BASE}/tiles"),
@@ -521,10 +518,11 @@ def _server_params() -> list[tuple[str, str, str]]:
         # RoutingRequest en V2 → réponse préfixée ack\r\n (voir _ack_for).
         ("Realtime", "Web-Service V2 Commands", "RoutingRequest"),
         ("Realtime", "Web-Service V2 Suffix", ""),
-        # iPhone WEB_SCOREBOARD ouvre http://www.waze.com (roadmap_scoreboard.m).
-        ("Scoreboard", "Feature enabled", "yes"),
-        ("Scoreboard", "Url", f"{BASE}/scoreboard"),
+        ("Scoreboard", "Feature enabled", "no"),
         ("User", "Show points ticker", "yes"),
+        # Le ticker iPhone ne s'initialise que si Gray scale = yes
+        # (roadmap_ticker.m → editor_screen_gray_scale()).
+        ("Editor", "Gray scale", "yes"),
     ]
 
 
@@ -1088,23 +1086,14 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                         )
                     continue
                 if _is_scoreboard_get(path, head):
-                    sq = _scoreboard_query(raw_path)
-                    html = scoreboard_html(
-                        total_points(),
-                        "ios6user",
-                        sq["lang"],
-                        period=sq["period"],
-                        geography=sq["geography"],
-                        width=int(sq["width"]),
-                        height=int(sq["height"]),
-                    )
-                    _log(f"  ★ scoreboard {path} period={sq['period']} geo={sq['geography']}")
+                    _log(f"  · classement désactivé {path}")
                     conn.sendall(
                         _http_envelope(
-                            html,
+                            b"",
                             ack=b"",
                             close=False,
-                            ctype="text/html; charset=utf-8",
+                            ctype="text/plain",
+                            status="404 Not Found",
                         )
                     )
                     continue

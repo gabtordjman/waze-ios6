@@ -274,7 +274,7 @@ def test_alerts() -> None:
     assert abs(parsed["lon"] - 6.48470) < 1e-4
     rows = report_alert_response(parsed)
     assert rows[0] == "RC,200,OK"
-    assert rows[1] == "ReportAlertRes,6,,"
+    assert rows[1] == "ReportAlertRes,6,Road report,"
     assert not any(r.startswith("UpdateUserPoints") for r in rows)
     assert rows[-1].startswith("AddAlert,")
     line = add_alert_line(
@@ -327,8 +327,9 @@ def test_geo_french_and_thin_streets() -> None:
     assert ",Streets,Color,#9A9A9A" in text
     assert ",Map,Background,#C5D0D4" in text
     assert ",System,Language,fra" in text
-    assert ",Scoreboard,Feature enabled,yes" in text
-    assert ",Scoreboard,Url," in text
+    assert ",Scoreboard,Feature enabled,no" in text
+    assert ",Editor,Gray scale,yes" in text
+    assert ",User,Show points ticker,yes" in text
 
 
 def test_prompts() -> None:
@@ -459,6 +460,7 @@ def test_wazers_adduser() -> None:
     assert parts[2] == "lea"
     assert parts[3] == "6484700"
     note_presence("192.168.1.60", b"At,6.48470,46.36458,0.0,12,90,-1,-1\n")
+    assert user_poll_lines("192.168.1.60") == []
     rows = user_poll_lines("192.168.1.99")
     assert any(r.startswith("AddUser,") for r in rows)
 

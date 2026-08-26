@@ -447,10 +447,10 @@ def _min_end_gap(a: tuple, b: tuple) -> int:
 
 SNAP_U = 900  # ~100 m : assez pour l'OSRM qui coupe un coin, pas une parallèle
 JOIN_U = 450
-HEADING_MAX = 50.0
+HEADING_MAX = 42.0
 LOOK_U = 1_400  # ~150 m d'OSRM devant pour décider un vrai virage
-SWITCH_MARGIN = 280
-CORRIDOR_U = 350  # ~40 m : les deux bouts + milieu doivent coller à l'OSRM
+SWITCH_MARGIN = 180
+CORRIDOR_U = 300  # ~33 m : coller à l'OSRM sans ruelle parallèle
 
 
 def _seg_seg(
@@ -1140,7 +1140,7 @@ def _drop_kinks(
             i += 1
             continue
         alen = int(cur[5]) if len(cur) > 5 else 0
-        short = alen < 40
+        short = alen < 55
         hp = _bearing(prev[8], prev[9], prev[6], prev[7])
         hc = _bearing(cur[8], cur[9], cur[6], cur[7])
         hn = _bearing(nxt[8], nxt[9], nxt[6], nxt[7])
@@ -1148,19 +1148,56 @@ def _drop_kinks(
         def _hd(a: float, b: float) -> float:
             return min(_ang_diff(a, b), _ang_diff(a, (b + 180.0) % 360.0))
 
-        hook = _hd(hp, hc) >= 40 and _hd(hc, hn) >= 40
+        hook = _hd(hp, hc) >= 35 and _hd(hc, hn) >= 35
         dcur = _dist_to_poly(cur[3], cur[4], pts)
         dnb = min(
             _dist_to_poly(prev[3], prev[4], pts),
             _dist_to_poly(nxt[3], nxt[4], pts),
         )
-        off = dcur > dnb + 80 and dcur > CORRIDOR_U
-        if (short and (hook or off)) or (hook and off):
+        off = dcur > dnb + 60 and dcur > CORRIDOR_U
+        i_pt = _nearest_pt_idx(cur[3], cur[4], pts)
+        j = min(i_pt, len(pts) - 2)
+        osrm_h = _bearing(pts[j][0], pts[j][1], pts[j + 1][0], pts[j + 1][1])
+        vs_osrm = _hd(hc, osrm_h)
+        if (short and (hook or off or vs_osrm >= 35)) or (hook and off):
             del out[i]
             if i > 1:
                 i -= 1
             continue
         i += 1
+    return out
+
+
+def _trim_end_hooks(
+    raw: list[tuple], pts: list[tuple[int, int]]
+) -> list[tuple]:
+    """Allée / bout perpendiculaire collé au pin : ça fait un crochet violet."""
+    if len(raw) < 3 or len(pts) < 2:
+        return raw
+    out = list(raw)
+    start_h = _bearing(pts[0][0], pts[0][1], pts[1][0], pts[1][1])
+    end_h = _bearing(pts[-2][0], pts[-2][1], pts[-1][0], pts[-1][1])
+
+    def _bad(row: tuple, want_h: float) -> bool:
+        rh = _bearing(row[8], row[9], row[6], row[7])
+        vs = min(_ang_diff(rh, want_h), _ang_diff(rh, (want_h + 180.0) % 360.0))
+        alen = int(row[5]) if len(row) > 5 else 0
+        return vs >= 40 and alen < 70
+
+    while len(out) > 2 and _bad(out[0], start_h):
+        if _dist_to_poly(out[0][3], out[0][4], pts) + 40 >= _dist_to_poly(
+            out[1][3], out[1][4], pts
+        ):
+            del out[0]
+            continue
+        break
+    while len(out) > 2 and _bad(out[-1], end_h):
+        if _dist_to_poly(out[-1][3], out[-1][4], pts) + 40 >= _dist_to_poly(
+            out[-2][3], out[-2][4], pts
+        ):
+            del out[-1]
+            continue
+        break
     return out
 
 

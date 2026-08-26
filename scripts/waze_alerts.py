@@ -246,14 +246,13 @@ def all_add_alert_lines() -> list[str]:
 def report_alert_response(parsed: dict, lang: str = "fra") -> list[str]:
     rec = store_report(parsed)
     add_points(REPORT_POINTS)
-    # GPL ReportAlertRes : popup seulement si msg non vide ; sinon bandeau
-    # ticker en haut (+N pts, « Road report » / report_event) via iPoints > 0.
+    # GPL : popup seulement si msg non vide. Points > 0 → ticker
+    # (editor_points_display_new_points_timed, report_event).
+    # Titre non vide pour que le parseur avale bien les 3 champs.
     _ = lang
-    # Titre seul (msg vide après la virgule finale) : pas de popup,
-    # iPoints>0 declenche le ticker bandeau (report_event).
     return [
         "RC,200,OK",
-        f"ReportAlertRes,{REPORT_POINTS},,",
+        f"ReportAlertRes,{REPORT_POINTS},Road report,",
         add_alert_line(rec),
     ]
 

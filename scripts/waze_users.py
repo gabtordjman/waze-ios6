@@ -123,30 +123,18 @@ def add_user_line(u: dict) -> str:
 
 
 def user_poll_lines(peer: str = "") -> list[str]:
+    """Uniquement les vrais clients connectés — pas de silhouettes fictives."""
     now = time.time()
     with _lock:
         _expire_peers(now)
         others = [dict(v) for k, v in _peers.items() if k != peer]
-        me = _peers.get(peer)
-    lon = lat = 0.0
-    if me:
-        lon, lat = float(me["lon"]), float(me["lat"])
-    elif others:
-        lon, lat = float(others[0]["lon"]), float(others[0]["lat"])
-    else:
-        return []
     rows = []
-    seen_ids = set()
+    seen_ids: set[int] = set()
     for u in others:
         uid = int(u["id"])
         if uid in seen_ids:
             continue
         seen_ids.add(uid)
-        rows.append(add_user_line(u))
-    for u in _bots(lon, lat, now):
-        if int(u["id"]) in seen_ids:
-            continue
-        seen_ids.add(int(u["id"]))
         rows.append(add_user_line(u))
     return rows[:40]
 
