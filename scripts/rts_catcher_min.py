@@ -1113,15 +1113,19 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                     blob, kind = _get_wzm_tile(path, allow_stub=True)
                     if blob:
                         _note_tile_served(kind)
-                        _log(
-                            f"  ★ tuile {kind}: {Path(path).name} ({len(blob)}B)"
-                        )
+                        msg = f"  ★ tuile {kind}: {Path(path).name} ({len(blob)}B)"
+                        if kind == "stub":
+                            msg += " (hors carte — pan/actualiser si zone GPS)"
+                        _log(msg)
                         conn.sendall(
                             _http_envelope(
                                 blob, ack=b"", close=False, ctype=BIN_CT
                             )
                         )
                     else:
+                        _log(
+                            f"  · tuile pas encore prête (build OSM?): {Path(path).name}"
+                        )
                         _log(f"  · tuile hors carte locale: {Path(path).name}")
                         conn.sendall(
                             _http_envelope(
