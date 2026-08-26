@@ -193,6 +193,17 @@ def build_sync(
                 "region": REGION,
             }
         )
+    try:
+        from tile_serve import clear_caches
+
+        clear_caches()
+    except Exception:
+        pass
+    print(
+        ">>> Carte OSM prête — sur l'iPhone : Actualiser la carte "
+        "(sinon les stubs vides restent en cache).",
+        flush=True,
+    )
     return 0
 
 

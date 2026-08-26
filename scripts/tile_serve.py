@@ -7,6 +7,9 @@ individuellement (roadmap_tile_manager.c). Format d'URL :
 
 Sans reponse valide le rafraichissement carte bloque (~3%) et le .wzm local
 supprime laisse la carte vide au redemarrage.
+
+Important VPS : ne pas servir de stub vide pendant le 1er build Overpass —
+sinon l'iPhone cache des tuiles vides et l'ecran reste blanc.
 """
 
 from __future__ import annotations
@@ -22,11 +25,13 @@ ROOT = Path(__file__).resolve().parents[1]
 WZM = ROOT / "maps" / "auto" / "map77001.wzm"
 WORLD_FIPS = 77001
 
+# En dessous = starter tweak / carte vide — on attend Overpass.
+_MIN_READY_BYTES = 50_000
+
 DATA_SIGNATURE = b"WZDF"
 ENDIAN_CORRECT = 0x00000001
 DATA_VERSION = 0x00030000
 
-# 77001_140208c4.wdf  ou chemin .../77001_140208/77001_140208c4.wdf
 _TILE_RE = re.compile(r"77001_([0-9a-fA-F]{8})\.wdf")
 
 _lock = threading.Lock()
@@ -36,8 +41,24 @@ _wzm_mtime: float = 0.0
 _served = 0
 
 
+def _wzm_ready() -> bool:
+    try:
+        return WZM.is_file() and WZM.stat().st_size >= _MIN_READY_BYTES
+    except OSError:
+        return False
+
+
+def clear_caches() -> None:
+    """Appelé après un build OSM pour forcer le rechargement."""
+    global _cache, _stub_cache, _wzm_mtime
+    with _lock:
+        _cache = {}
+        _stub_cache = {}
+        _wzm_mtime = 0.0
+
+
 def _load_wzm() -> dict[int, bytes]:
-    global _cache, _wzm_mtime
+    global _cache, _wzm_mtime, _stub_cache
     if not WZM.is_file():
         return {}
     mtime = WZM.stat().st_mtime
@@ -57,6 +78,8 @@ def _load_wzm() -> dict[int, bytes]:
         out[tid] = header + blob[data_off : data_off + comp]
     _cache = out
     _wzm_mtime = mtime
+    # Nouvelle carte → oublier les stubs (sinon tuiles vides resservies).
+    _stub_cache = {}
     return out
 
 
@@ -81,16 +104,41 @@ def tile_id_from_path(path: str) -> int | None:
     return int(m.group(1), 16)
 
 
-def get_tile(path: str, *, allow_stub: bool = True) -> tuple[bytes | None, str]:
-    """Retourne (blob .wdf, kind) avec kind in ('wzm', 'stub', '')."""
+def get_tile(
+    path: str,
+    *,
+    allow_stub: bool = True,
+    wait_build_sec: float = 90.0,
+) -> tuple[bytes | None, str]:
+    """Retourne (blob .wdf, kind) avec kind in ('wzm', 'stub', '').
+
+    Si la carte n'est pas encore prête (1er GPS / Overpass), attend jusqu'à
+    wait_build_sec avant de répondre — évite de cacher des stubs vides.
+    """
     tid = tile_id_from_path(path)
     if tid is None:
         return None, ""
+
+    deadline = time.time() + max(0.0, wait_build_sec)
+    while True:
+        with _lock:
+            hit = _load_wzm().get(tid)
+            if hit:
+                return hit, "wzm"
+            ready = _wzm_ready()
+        if ready:
+            # Carte présente mais cette tuile hors zone → stub ou 404.
+            break
+        if time.time() >= deadline:
+            break
+        time.sleep(0.4)
+
     with _lock:
         hit = _load_wzm().get(tid)
         if hit:
             return hit, "wzm"
-        if allow_stub:
+        # Stub seulement si une vraie carte existe déjà (hors bbox).
+        if allow_stub and _wzm_ready():
             return _stub_tile(tid), "stub"
         return None, ""
 
