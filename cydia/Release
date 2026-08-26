@@ -6,7 +6,7 @@ Codename: ios6
 Architectures: iphoneos-arm
 Components: main
 Description: Waze 2.4 community server
-Date: Tue, 25 Aug 2026 23:37:55 +0000
+Date: Wed, 26 Aug 2026 00:01:01 +0000
 SHA1:
- 38050d392c76ff5fbe66dc364fb891eed8d5094f 541 Packages
- bf4b319f625500d1ef3195eb498c5a2d4eebbadd 402 Packages.bz2
+ faa6dddef3a10ba8ebdad85012f96803c6919ad5 464 Packages
+ 5b55548207e2cccbdd76a39ccc9ededf1bab233b 380 Packages.bz2

@@ -13,5 +13,6 @@ __pycache__/
 /tiles/*
 !/tiles/.gitkeep
 
-# Artefacts Cydia locaux (régénérés par make-repo / build-deb)
-/cydia/debs/*.deb
+# Artefacts Cydia : versionner le .deb pour la source publique
+# (sinon Cydia / jsDelivr ne peuvent pas le télécharger)
+# /cydia/debs/*.deb

@@ -1040,6 +1040,53 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 continue
 
             if "GET" in first:
+                # Repo Cydia servie par le catcher (évite raw.githubusercontent 307).
+                pl = path.lower().split("?", 1)[0]
+                if pl == "/cydia" or pl == "/cydia/":
+                    body = (
+                        b"<html><body><h1>waze-ios6 Cydia</h1>"
+                        b"<p>Add this URL as Cydia source:</p>"
+                        b"<code>"
+                        + BASE.encode("ascii", errors="replace")
+                        + b"/cydia</code></body></html>"
+                    )
+                    conn.sendall(
+                        _http_envelope(
+                            body, ack=b"", close=False, ctype="text/html; charset=utf-8"
+                        )
+                    )
+                    _log("  ★ cydia index")
+                    continue
+                if pl.startswith("/cydia/"):
+                    rel = unquote(urlparse(path).path)[len("/cydia/") :]
+                    # Empêche .. hors de cydia/
+                    cand = (ROOT / "cydia" / rel).resolve()
+                    root_c = (ROOT / "cydia").resolve()
+                    if str(cand).startswith(str(root_c)) and cand.is_file():
+                        payload = cand.read_bytes()
+                        ct = _guess_ct(str(cand), payload)
+                        if cand.suffix == ".deb":
+                            ct = "application/vnd.debian.binary-package"
+                        elif cand.name == "Packages":
+                            ct = "text/plain; charset=utf-8"
+                        elif cand.name.endswith(".bz2"):
+                            ct = "application/x-bzip2"
+                        _log(f"  ★ cydia {rel} ({len(payload)}B)")
+                        conn.sendall(
+                            _http_envelope(payload, ack=b"", close=False, ctype=ct)
+                        )
+                    else:
+                        _log(f"  · cydia 404 {rel}")
+                        conn.sendall(
+                            _http_envelope(
+                                b"Not Found\n",
+                                ack=b"",
+                                close=False,
+                                ctype="text/plain",
+                                status="404 Not Found",
+                            )
+                        )
+                    continue
                 if _is_scoreboard_get(path, head):
                     sq = _scoreboard_query(raw_path)
                     html = scoreboard_html(

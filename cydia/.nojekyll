@@ -1,0 +1,8 @@
+# GitHub Pages — servir le dossier cydia/ sans redirect 307
+# Settings → Pages → Source: Deploy from branch → branch vps / folder /cydia
+# (ou workflow ci-dessous si tu préfères user.github.io)
+
+# Pour l'instant la source Cydia la plus fiable reste :
+#   http://VPS_IP:PORT/cydia
+# ou jsDelivr :
+#   https://cdn.jsdelivr.net/gh/USER/REPO@vps/cydia

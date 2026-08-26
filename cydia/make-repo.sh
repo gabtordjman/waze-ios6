@@ -1,8 +1,12 @@
 #!/bin/sh
-# Regénère Packages et Release pour Cydia.
+# Regénère Packages / Packages.bz2 / Release pour Cydia.
 #
-# Préfère dpkg-scanpackages (paquet Debian: dpkg-dev).
-# Sinon fallback via dpkg-deb -I (souvent déjà présent avec dpkg).
+# Layout (compatible Cydia + GitHub / jsDelivr / catcher) :
+#   cydia/Packages
+#   cydia/Packages.bz2
+#   cydia/Release
+#   cydia/debs/*.deb
+# Filename dans Packages = ./debs/<fichier>.deb
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CYDIA="$ROOT/cydia"
@@ -17,11 +21,7 @@ if [ ! -f "$1" ]; then
   exit 1
 fi
 
-_write_packages_scan() {
-  dpkg-scanpackages . /dev/null > "$CYDIA/Packages"
-}
-
-_write_packages_fallback() {
+_write_packages() {
   : > "$CYDIA/Packages"
   for deb in *.deb; do
     [ -f "$deb" ] || continue
@@ -29,18 +29,18 @@ _write_packages_fallback() {
     md5=$(md5sum "$deb" | awk '{print $1}')
     sha1=$(sha1sum "$deb" | awk '{print $1}')
     sha256=$(sha256sum "$deb" | awk '{print $1}')
-    # Contrôle du .deb (sans Signature / etc.)
+    rel="./debs/$deb"
     dpkg-deb -f "$deb" Package Version Architecture Maintainer Depends Section Description Name 2>/dev/null \
-      | awk -v fn="./$deb" -v sz="$sz" -v md5="$md5" -v sha1="$sha1" -v sha256="$sha256" '
+      | awk -v fn="$rel" -v sz="$sz" -v md5="$md5" -v sha1="$sha1" -v sha256="$sha256" '
         BEGIN { pkg=""; ver=""; arch=""; maint=""; dep=""; sec=""; desc=""; name="" }
-        /^Package:/ { pkg=$0; sub(/^Package: */,"",pkg) }
-        /^Version:/ { ver=$0; sub(/^Version: */,"",ver) }
-        /^Architecture:/ { arch=$0; sub(/^Architecture: */,"",arch) }
-        /^Maintainer:/ { maint=$0; sub(/^Maintainer: */,"",maint) }
-        /^Depends:/ { dep=$0; sub(/^Depends: */,"",dep) }
-        /^Section:/ { sec=$0; sub(/^Section: */,"",sec) }
-        /^Description:/ { desc=$0; sub(/^Description: */,"",desc) }
-        /^Name:/ { name=$0; sub(/^Name: */,"",name) }
+        /^Package:/ { sub(/^Package: */,""); pkg=$0 }
+        /^Version:/ { sub(/^Version: */,""); ver=$0 }
+        /^Architecture:/ { sub(/^Architecture: */,""); arch=$0 }
+        /^Maintainer:/ { sub(/^Maintainer: */,""); maint=$0 }
+        /^Depends:/ { sub(/^Depends: */,""); dep=$0 }
+        /^Section:/ { sub(/^Section: */,""); sec=$0 }
+        /^Description:/ { sub(/^Description: */,""); desc=$0 }
+        /^Name:/ { sub(/^Name: */,""); name=$0 }
         END {
           if (pkg == "") exit 1
           print "Package: " pkg
@@ -59,29 +59,26 @@ _write_packages_fallback() {
           print ""
         }
       ' >> "$CYDIA/Packages" || {
-        echo "ERREUR: lecture control de $deb (installe dpkg-dev ou dpkg)"
+        echo "ERREUR: lecture control de $deb"
+        echo "  sudo apt-get install -y dpkg"
         exit 1
       }
   done
 }
 
-if command -v dpkg-scanpackages >/dev/null 2>&1; then
-  echo "→ dpkg-scanpackages"
-  _write_packages_scan
-elif command -v dpkg-deb >/dev/null 2>&1; then
-  echo "→ fallback dpkg-deb (installe dpkg-dev pour le mode officiel)"
-  echo "   sudo apt-get install -y dpkg-dev"
-  _write_packages_fallback
-else
-  echo "ERREUR: ni dpkg-scanpackages ni dpkg-deb."
-  echo "  sudo apt-get install -y dpkg-dev"
+if ! command -v dpkg-deb >/dev/null 2>&1; then
+  echo "ERREUR: dpkg-deb introuvable — sudo apt-get install -y dpkg"
   exit 1
 fi
 
-if command -v gzip >/dev/null 2>&1; then
+echo "→ génération Packages (Filename=./debs/…)"
+_write_packages
+
+if command -v bzip2 >/dev/null 2>&1; then
+  bzip2 -9c "$CYDIA/Packages" > "$CYDIA/Packages.bz2"
+elif command -v gzip >/dev/null 2>&1; then
+  echo "AVERTISSEMENT: bzip2 absent — apt install bzip2 recommandé"
   gzip -9c "$CYDIA/Packages" > "$CYDIA/Packages.bz2"
-else
-  echo "AVERTISSEMENT: gzip absent — Packages.bz2 non généré"
 fi
 
 DATE=$(date -Ru 2>/dev/null || date -u)
@@ -107,5 +104,11 @@ for f in Packages Packages.bz2; do
   fi
   echo " $hash $sz $f" >> "$CYDIA/Release"
 done
+
 echo "OK $CYDIA/Packages"
 [ -f "$CYDIA/Packages.bz2" ] && echo "OK $CYDIA/Packages.bz2"
+echo ""
+echo "Sources Cydia (pas de 307) :"
+echo "  1) Catcher VPS :  http://TON_IP:8080/cydia"
+echo "  2) jsDelivr     :  https://cdn.jsdelivr.net/gh/USER/REPO@vps/cydia"
+echo "Éviter raw.githubusercontent.com (redirect 307 → Cydia iOS 6 casse)."

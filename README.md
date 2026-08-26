@@ -95,15 +95,23 @@ sudo ufw reload
 
 ### Tweak / .deb (IP + port)
 
-Le `.deb` **n’est pas** dans git (artefact local). À construire avec la même
-IP **et** le port HTTP :
-
 ```bash
 sh tweak/build-deb.sh 203.0.113.50:8080 1.0.0
 sh cydia/make-repo.sh
+git add -f cydia/debs/*.deb cydia/Packages cydia/Packages.bz2 cydia/Release
+git commit -m "cydia: release" && git push origin vps
 ```
 
-Sans `:8080` dans le `.deb`, l’iPhone parlerait encore au port 80 (Apache).
+**Source Cydia (pas de 307)** — dans Cydia → Sources → Add :
+
+```
+http://203.0.113.50:8080/cydia
+```
+
+(`raw.githubusercontent.com` renvoie souvent un **307** que Cydia iOS 6
+n’aime pas. Le catcher sert `/cydia` en 200 direct.)
+
+Alternative GitHub via CDN : `https://cdn.jsdelivr.net/gh/USER/REPO@vps/cydia`
 
 ---
 
