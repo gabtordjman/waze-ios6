@@ -451,6 +451,10 @@ HEADING_MAX = 42.0
 LOOK_U = 1_400  # ~150 m d'OSRM devant pour décider un vrai virage
 SWITCH_MARGIN = 280  # rester sur la rue tant que l'autre n'est pas nettement mieux
 CORRIDOR_U = 300  # ~33 m : coller à l'OSRM sans ruelle parallèle
+# Même tuile sans nœud partagé : l'import OSM laisse souvent 15–30 m de jeu
+# entre deux bouts d'une petite rue. 120 µ° (~13 m) coupait ces morceaux.
+GEOM_TOUCH_U = 280
+JOIN_LOOSE_U = 220
 
 
 def _seg_seg(
@@ -595,7 +599,7 @@ def _can_join(prev: tuple, nxt: tuple) -> bool:
         shared = {int(prev[10]), int(prev[11])} & {int(nxt[10]), int(nxt[11])}
         if shared:
             return gap < JOIN_U * 4
-        return gap < 120
+        return gap < JOIN_LOOSE_U
     return gap < JOIN_U
 
 
@@ -667,7 +671,12 @@ def _bfs_bridge(
             inc[(int(r[0]), int(r[10]))].append(r)
             inc[(int(r[0]), int(r[11]))].append(r)
     join_u = JOIN_U
-    touch_u = 120
+    touch_u = GEOM_TOUCH_U
+    start, goal = prev[:2], nxt[:2]
+    # Un trou de 15–30 m entre prev et nxt EST souvent la petite rue du milieu.
+    # Si on accepte nxt comme voisin géométrique de prev, BFS « trouve » le but
+    # en 1 hop et n'insère rien → overlay coupé.
+    gap_ends = _min_end_gap(prev, nxt)
 
     def neighbors(row: tuple) -> list[tuple]:
         out: list[tuple] = []
@@ -681,15 +690,23 @@ def _bfs_bridge(
         for o in nodes:
             if o[:2] == row[:2] or o[:2] in seen:
                 continue
-            if o[0] != row[0] and _min_end_gap(row, o) < join_u:
+            gap = _min_end_gap(row, o)
+            skip_direct = (
+                row[:2] == start
+                and o[:2] == goal
+                and gap_ends >= 80
+            )
+            if o[0] != row[0] and gap < join_u:
+                if skip_direct:
+                    continue
                 seen.add(o[:2])
                 out.append(o)
-            elif geom and o[0] == row[0] and _min_end_gap(row, o) < touch_u:
+            elif geom and o[0] == row[0] and gap < touch_u:
+                if skip_direct:
+                    continue
                 seen.add(o[:2])
                 out.append(o)
         return out
-
-    start, goal = prev[:2], nxt[:2]
     came: dict[tuple, tuple | None] = {start: None}
     hops: dict[tuple, int] = {start: 0}
     row_of: dict[tuple, tuple] = {start: prev, goal: nxt}
@@ -734,10 +751,10 @@ def _fill_along_route(
     """
     if len(raw) < 2 or len(pts) < 2:
         return raw
-    pool = [r for r in index if _on_corridor(r, pts)]
+    pool = [r for r in index if _on_corridor(r, pts) or _on_corridor(r, pts, CORRIDOR_U + 80)]
     out = [raw[0]]
     for nxt in raw[1:]:
-        out.extend(_bfs_bridge(out[-1], nxt, pool, geom=True))
+        out.extend(_bfs_bridge(out[-1], nxt, pool, geom=True, max_hops=12))
         out.append(nxt)
     return out
 
@@ -1157,6 +1174,14 @@ def _drop_kinks(
     while i < len(out) - 1:
         prev, cur, nxt = out[i - 1], out[i], out[i + 1]
         if not (_geom_join(prev, nxt) or _shares_node(prev, nxt)):
+            i += 1
+            continue
+        # Si prev et next sont simplement les deux bouts du morceau courant
+        # (petite rue ~40 m), ce n'est pas un crochet : c'est la rue. L'OSRM
+        # simplifié a souvent 35°+ d'écart → l'ancien vs_osrm les effaçait.
+        gap_pn = _min_end_gap(prev, nxt)
+        cur_len = max(abs(int(cur[6]) - int(cur[8])) + abs(int(cur[7]) - int(cur[9])), 1)
+        if gap_pn >= max(150, cur_len // 3):
             i += 1
             continue
         alen = int(cur[5]) if len(cur) > 5 else 0

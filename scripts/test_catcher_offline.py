@@ -485,6 +485,30 @@ def test_drop_kinks_skips_short_hook() -> None:
     assert [r[1] for r in out] == [0, 2], [r[1] for r in out]
 
 
+def test_drop_kinks_keeps_short_street() -> None:
+    """Petite rue ~40 m entre deux morceaux : ce n'est pas un crochet."""
+    from waze_route import _drop_kinks
+
+    a = _line(1, 0, 0, 0, 3_000, 0, 0, 1)
+    mid = _line(1, 1, 3_000, 0, 3_280, 250, 1, 2)
+    b = _line(1, 2, 3_280, 0, 8_000, 0, 2, 3)
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    out = _drop_kinks([a, mid, b], pts)
+    assert [r[1] for r in out] == [0, 1, 2], [r[1] for r in out]
+
+
+def test_fill_same_tile_gap_without_shared_node() -> None:
+    """Deux bouts d'une petite rue à ~22 m, nœuds OSM distincts."""
+    from waze_route import _fill_along_route
+
+    a = _line(1, 0, 0, 0, 3_000, 0, 0, 1)
+    mid = _line(1, 1, 3_000, 0, 3_200, 0, 10, 11)
+    b = _line(1, 2, 3_200, 0, 8_000, 0, 20, 21)
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    out = _fill_along_route([a, b], [a, mid, b], pts)
+    assert [r[1] for r in out] == [0, 1, 2], [r[1] for r in out]
+
+
 def test_resample_keeps_corner() -> None:
     from waze_route import _resample_pts
 
@@ -672,6 +696,8 @@ def main() -> int:
         test_osrm_steps_by_distance,
         test_osrm_steps_clear_geometry_turns,
         test_drop_kinks_skips_short_hook,
+        test_drop_kinks_keeps_short_street,
+        test_fill_same_tile_gap_without_shared_node,
         test_resample_keeps_corner,
         test_wazers_adduser,
         test_downsample,
