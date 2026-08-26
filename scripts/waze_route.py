@@ -328,9 +328,11 @@ def _load_line_index(
         ENDIAN_CORRECT,
         POINT_REAL_MASK,
         S_LINE_DATA,
+        S_LINE_BYSQUARE1,
         S_POINT_DATA,
         S_SQUARE_DATA,
         TILE_SCALES,
+        CATEGORY_RANGE,
         read_tile,
         read_wzm,
         scale_factor,
@@ -376,6 +378,17 @@ def _load_line_index(
             return _w + dx * _f, _s + dy * _f
 
         n_lines = len(lines) // 8
+        cat_of = [7] * n_lines
+        bysquare = sections.get(S_LINE_BYSQUARE1, b"")
+        need = (CATEGORY_RANGE + 1) * 2
+        if n_lines and len(bysquare) >= need:
+            cumul = struct.unpack(f"<{CATEGORY_RANGE + 1}H", bysquare[:need])
+            prev_n = 0
+            for cat in range(CATEGORY_RANGE + 1):
+                n = min(int(cumul[cat]), n_lines)
+                for li in range(prev_n, n):
+                    cat_of[li] = cat
+                prev_n = n
         for li in range(n_lines):
             frm, to, _fs, _rg = struct.unpack("<HHHH", lines[li * 8 : li * 8 + 8])
             lon1, lat1 = abs_xy(frm)
@@ -397,6 +410,7 @@ def _load_line_index(
                     lat1,
                     frm & POINT_REAL_MASK,
                     to & POINT_REAL_MASK,
+                    cat_of[li],
                 )
             )
 
@@ -484,6 +498,25 @@ def _heading_err(row: tuple, brg: float) -> float:
     )
 
 
+def _road_class(row: tuple) -> int:
+    """1 freeway … 7 street. Absent (tests) → street."""
+    if len(row) > 12:
+        try:
+            return int(row[12])
+        except (TypeError, ValueError):
+            return 7
+    return 7
+
+
+def _pick_cost(row: tuple, pts: list[tuple[int, int]], i: int, brg: float) -> int:
+    """Coût pour rester/changer de ligne. L'axe (jaune) bat une place grise proche."""
+    return (
+        _osrm_window_cost(row, pts, i)
+        + int(_heading_err(row, brg) * 6)
+        + _road_class(row) * 40
+    )
+
+
 def _osrm_window_cost(
     row: tuple, pts: list[tuple[int, int]], i: int, look_u: int = LOOK_U
 ) -> int:
@@ -553,7 +586,17 @@ def _on_corridor(
             return False
         chord = math.hypot(bx - ax, by - ay)
         if chord < 900:
-            return True
+            # Un côté de place (~80 m) a les deux coins sur l'OSRM si l'itinéraire
+            # longe l'avenue : sans cap, Place de Crête passait le couloir.
+            i0 = _nearest_pt_idx(ax, ay, pts)
+            j = min(i0, len(pts) - 2)
+            osrm_h = _bearing(pts[j][0], pts[j][1], pts[j + 1][0], pts[j + 1][1])
+            line_h = _bearing(ax, ay, bx, by)
+            err = min(
+                _ang_diff(osrm_h, line_h),
+                _ang_diff(osrm_h, (line_h + 180.0) % 360.0),
+            )
+            return err <= 55.0
         i1 = _nearest_pt_idx(ax, ay, pts)
         i2 = _nearest_pt_idx(bx, by, pts)
         arc = _poly_arclen(pts, i1, i2)
@@ -1032,8 +1075,7 @@ def _match_segments(
             )
             if not joinable and not left_prev:
                 continue
-            cost = _osrm_window_cost(row, pts, i)
-            cost += int(_heading_err(row, brg) * 6)
+            cost = _pick_cost(row, pts, i, brg)
             if prev is not None and row[:2] == prev[:2]:
                 cost = cost // 2
             elif prev is not None and row[0] != prev[0]:
@@ -1050,7 +1092,7 @@ def _match_segments(
 
         if prev is not None:
             stay_now = _line_to_osrm(prev, seg_a, seg_b)
-            stay_cost = _osrm_window_cost(prev, pts, i)
+            stay_cost = _pick_cost(prev, pts, i, brg)
             if best is None or best[:2] == prev[:2]:
                 if stay_now <= SNAP_U * 2 and stay_heading_ok:
                     best = prev

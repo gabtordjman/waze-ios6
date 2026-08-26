@@ -118,7 +118,7 @@ def _run_match(index, pts, length=1_200, duration=120):
         wr._load_osm_names = old_names
 
 
-def _line(tid, li, x1, y1, x2, y2, n1, n2):
+def _line(tid, li, x1, y1, x2, y2, n1, n2, cat=7):
     return (
         tid,
         li,
@@ -132,6 +132,7 @@ def _line(tid, li, x1, y1, x2, y2, n1, n2):
         y1,
         n1,
         n2,
+        cat,
     )
 
 
@@ -205,6 +206,15 @@ def test_match_does_not_detour_on_parallel() -> None:
     ids = [s["line"] for s in _run_match(south + north, pts, 800, 80)]
     assert 9 not in ids and 10 not in ids, ids
     assert ids[0] == 0 and ids[-1] == 1, ids
+
+
+def test_match_prefers_primary_over_close_place() -> None:
+    """Place de Crête (~20 m, street) vs avenue jaune (primary) : rester sur l'axe."""
+    avenue = _line(1, 0, 0, 0, 8_000, 0, 0, 1, 2)
+    place = _line(1, 9, 0, 180, 8_000, 180, 10, 11, 7)
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    ids = [s["line"] for s in _run_match([avenue, place], pts, 800, 80)]
+    assert ids == [0], ids
 
 
 def test_long_line_matches_at_start() -> None:
@@ -688,6 +698,7 @@ def main() -> int:
         test_match_ignores_spur_when_osrm_cuts_corner,
         test_match_ignores_diagonal_fork,
         test_match_does_not_detour_on_parallel,
+        test_match_prefers_primary_over_close_place,
         test_long_line_matches_at_start,
         test_pin_reaches_driveway,
         test_pin_reaches_driveway_without_shared_node,
