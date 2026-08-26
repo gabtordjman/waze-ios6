@@ -1,4 +1,8 @@
-# Waze iOS6 — repo Cydia
+# Relight — repo Cydia
+
+Tweak public : **Relight** (`com.wazeios6.server`). Version actuelle : **1.0.2**.
+
+`WazeIOS6Fix` (proxy mitm lab) n’est **pas** dans ce repo Cydia.
 
 ## Pourquoi pas `raw.githubusercontent.com` ?
 
@@ -25,17 +29,15 @@ Si le dépôt public est poussé (branche `vps` + `.deb` inclus) :
 https://cdn.jsdelivr.net/gh/TON_USER/TON_REPO@vps/cydia
 ```
 
-Plus tard tu pourras simplifier avec GitHub Pages / domaine custom pointant
-sur le même contenu.
-
 ## Build + publish
 
 ```bash
-sh tweak/build-deb.sh TON_IP:8080 1.0.0
+sh tweak/build-deb.sh TON_IP:8080 1.0.2
 sh cydia/make-repo.sh
 git add -f cydia/debs/*.deb cydia/Packages cydia/Packages.bz2 cydia/Release
-git commit -m "cydia: release 1.0.0"
+git commit -m "cydia: Relight 1.0.2"
 git push origin vps
 ```
 
-Compte Waze après install : `ios6user` / `ios6pass`.
+Chaque install Relight crée un nick `wazer…` (pas le compte partagé `ios6user`).
+Mots de passe : `relight`. L’UI / la voix suivent le GPS (fra ou eng).

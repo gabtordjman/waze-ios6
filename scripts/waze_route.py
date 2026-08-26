@@ -24,7 +24,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 OSRM = "https://router.project-osrm.org/route/v1/driving"
-UA = "waze-ios6-catcher/1.0 (local lab)"
+UA = "Relight/1.0.2 (waze-ios6)"
 ROOT = Path(__file__).resolve().parents[1]
 WZM = ROOT / "maps" / "auto" / "map77001.wzm"
 OSM_CACHES = (
@@ -449,7 +449,7 @@ SNAP_U = 900  # ~100 m : assez pour l'OSRM qui coupe un coin, pas une parallèle
 JOIN_U = 450
 HEADING_MAX = 42.0
 LOOK_U = 1_400  # ~150 m d'OSRM devant pour décider un vrai virage
-SWITCH_MARGIN = 180
+SWITCH_MARGIN = 280  # rester sur la rue tant que l'autre n'est pas nettement mieux
 CORRIDOR_U = 300  # ~33 m : coller à l'OSRM sans ruelle parallèle
 
 
@@ -649,11 +649,18 @@ def _bfs_bridge(
     max_hops: int = 8,
     geom: bool = False,
 ) -> list[tuple]:
-    """Lignes du couloir qui relient prev à nxt (nœuds .wzm / bord de tuile)."""
+    """Lignes du couloir qui relient prev à nxt (nœuds .wzm / bord de tuile).
+
+    On cherche aussi une 3e tuile du couloir : un trou tile A → tile C sans B
+    coupait l'overlay (instrument_segments s'arrête). Les voisins même tuile
+    sont visités d'abord pour ne pas glisser sur une copie d'une autre tuile.
+    """
     if _connected(prev, nxt):
         return []
     allowed = {prev[0], nxt[0]}
-    nodes = [r for r in pool if r[0] in allowed]
+    same = [r for r in pool if r[0] in allowed]
+    extra = [r for r in pool if r[0] not in allowed]
+    nodes = same + extra
     inc: dict[tuple[int, int], list[tuple]] = defaultdict(list)
     for r in nodes:
         if len(r) > 11:
@@ -1009,6 +1016,7 @@ def _match_segments(
             if not joinable and not left_prev:
                 continue
             cost = _osrm_window_cost(row, pts, i)
+            cost += int(_heading_err(row, brg) * 6)
             if prev is not None and row[:2] == prev[:2]:
                 cost = cost // 2
             elif prev is not None and row[0] != prev[0]:
@@ -1019,13 +1027,21 @@ def _match_segments(
                 best_cost = cost
                 best = row
 
+        stay_heading_ok = True
+        if prev is not None and not at_end:
+            stay_heading_ok = _heading_err(prev, brg) <= HEADING_MAX + 12.0
+
         if prev is not None:
             stay_now = _line_to_osrm(prev, seg_a, seg_b)
             stay_cost = _osrm_window_cost(prev, pts, i)
             if best is None or best[:2] == prev[:2]:
-                if stay_now <= SNAP_U * 2:
+                if stay_now <= SNAP_U * 2 and stay_heading_ok:
                     best = prev
-            elif stay_now <= SNAP_U * 2 and stay_cost <= best_cost + SWITCH_MARGIN:
+            elif (
+                stay_now <= SNAP_U * 2
+                and stay_heading_ok
+                and stay_cost <= best_cost + SWITCH_MARGIN
+            ):
                 best = prev
 
         if best is None and at_end:
@@ -1046,6 +1062,10 @@ def _match_segments(
             del raw[i]
             continue
         i += 1
+
+    # Crochet A-B-A déjà enlevé. Un zigzag A-ruelle-C (A et C se touchent)
+    # laisse un à-coup gauche/droite : on le retire comme un kink.
+    raw = _drop_kinks(raw, pts)
 
     raw = _fill_along_route(raw, index, pts)
     raw = _pin_ends(raw, index, pts)

@@ -1,11 +1,13 @@
-# Waze iOS 6 — serveur VPS
+# Relight
 
-Branche dédiée au déploiement public. Les serveurs Waze d’origine sont éteints :
-ce dépôt fait tourner un mock RTS pour **Waze 2.4.0.0** (iPhone jailbreaké),
-avec cartes OSM générées autour du GPS de chaque utilisateur.
+Community server for **Waze 2.4.0.0** on jailbroken iOS 6. The original Waze
+servers are gone; Relight speaks the GPL 150 protocol so the old client can
+log in, download a local OSM map around the GPS, route, and report.
 
-Cible client : tweak Cydia (voir [`cydia/`](cydia/)) qui redirige Waze vers
-l’IP publique de ce serveur.
+Not affiliated with Google or Waze. See [LICENSE](LICENSE).
+
+Cydia tweak (this repo): **Relight** (`com.wazeios6.server`). Lab-only proxy
+tweak: [`tweak/WazeIOS6Fix/`](tweak/WazeIOS6Fix/) — do not ship that one.
 
 ---
 
@@ -96,10 +98,10 @@ sudo ufw reload
 ### Tweak / .deb (IP + port)
 
 ```bash
-sh tweak/build-deb.sh 203.0.113.50:8080 1.0.0
+sh tweak/build-deb.sh 203.0.113.50:8080 1.0.2
 sh cydia/make-repo.sh
 git add -f cydia/debs/*.deb cydia/Packages cydia/Packages.bz2 cydia/Release
-git commit -m "cydia: release" && git push origin vps
+git commit -m "cydia: Relight 1.0.2" && git push origin vps
 ```
 
 **Source Cydia (pas de 307)** — dans Cydia → Sources → Add :
@@ -125,41 +127,41 @@ sudo systemctl restart waze-catcher   # ou : sudo sh stop.sh && sudo sh go-vps.s
 
 Le fichier `.env` n’est **pas** écrasé par `git pull` (il est dans `.gitignore`).
 
+Après un pull qui change GetGeo / `UpdateConfig` : **tuer Waze et le rouvrir**.
+
 ---
 
 ## Comportement runtime
 
-1. iPhone (tweak Cydia) → HTTP `http://WAZE_SERVER_IP/rtserver`
-2. Login protocole 150 + GetGeo → config `Download.*`, tuiles
-3. Premier GPS (`At` / `SeeMe`) → `UpdateConfig` (ticker / Gray scale / pas de
-   classement) — **pas besoin de `phone.sh`** ni de SSH sur l’iPhone
+1. iPhone (tweak Relight) → HTTP `http://WAZE_SERVER_IP/rtserver`
+2. Login protocole 150 + GetGeo → config, tuiles, langue **fra** ou **eng**
+   selon le GPS (France/Québec/Maghreb → français, US/UK/ailleurs → anglais)
+3. Premier GPS (`At` / `SeeMe`) → `UpdateConfig` (ticker, Gray scale, langue)
+   — **pas besoin de `phone.sh`**
 4. Premier GPS → build carte OSM dans `maps/auto/` (~30–90 s)
-5. Expansion Overpass si pan / destination hors bbox (file d’attente : 1 job à la fois)
-6. Tuiles : `GET /tiles/…` depuis le `.wzm` (+ stubs hors zone)
-7. Signalements, wazers réels (pas de bots)
+5. Expansion Overpass si pan / destination hors bbox (1 job à la fois)
+6. Tuiles : `GET /tiles/…` depuis le `.wzm`
+7. Signalements + wazers réels (nick unique par install)
 
-Le ticker de points ne s’initialise qu’au **démarrage** de Waze. Après un
-`git pull` qui active `UpdateConfig`, tuer Waze et le rouvrir **une fois**.
-
-Compte client par défaut (tweak) : `ios6user` / `ios6pass`.
+Le ticker de points ne s’initialise qu’au **démarrage** de Waze.
 
 ---
 
 ## Tweak Cydia (sur un PC de build, pas le VPS)
 
 ```bash
-sh tweak/build-deb.sh TON_IP_PUBLIQUE 1.0.0
+sh tweak/build-deb.sh TON_IP_PUBLIQUE 1.0.2
 sh cydia/make-repo.sh
-git add cydia/ && git commit -m "cydia: release 1.0.0" && git push origin vps
+git add cydia/ && git commit -m "cydia: Relight 1.0.2" && git push origin vps
 ```
 
 Sur l’iPhone : Cydia → Sources →
 
 ```
-https://raw.githubusercontent.com/VOTRE_USER/waze-ios6/vps/cydia
+http://TON_IP:8080/cydia
 ```
 
-Installer **Waze iOS6 Server**, ouvrir Waze 2.4.
+Installer **Relight**, ouvrir Waze 2.4.
 
 Détails : [`cydia/README.md`](cydia/README.md).
 
@@ -167,7 +169,7 @@ Détails : [`cydia/README.md`](cydia/README.md).
 
 ## Sécurité (repo public)
 
-- Serveur mock **ouvert** : pas d’auth forte, compte partagé
+- Serveur mock **ouvert** : pas d’auth forte
 - Ne pas committer `.env`, clés privées hors `mitm/certs` de lab, ni dumps perso
 - Overpass : un build à la fois (rate-limit interne)
 - Surveiller disque (`maps/`, `logs/`)
@@ -183,5 +185,6 @@ Détails : [`cydia/README.md`](cydia/README.md).
 | Carte vide | attendre GPS + Overpass ; logs `maps/auto/` ; `★ tuile` dans les logs |
 | Pas de GET `/tiles/` | prefs iPhone : `Download.Tiles` / tweak pas à jour |
 | Pas de bandeau +points | tuer Waze et relancer (ticker init au start) |
+| UI / voix en français aux US | tuer Waze après le 1er GPS (GetGeo + UpdateConfig) |
 
 Tests sans réseau : `python3 scripts/test_catcher_offline.py`.

@@ -1,10 +1,14 @@
-# WazeIOS6Fix — force proxy + SSL trust pour Waze (iOS 6)
+# WazeIOS6Fix — lab only (not Relight)
 
-Waze ignore le proxy Wi‑Fi. Ce tweak Substrate :
-1. Force un proxy HTTP (mitmweb) pour le process Waze
-2. Désactive la vérif SSL (SecTrustEvaluate) pour Waze
+**Relight** (Cydia public) is `com.wazeios6.server` — see `tweak/layout/` and
+`tweak/build-deb.sh`. Do not ship this package to end users.
 
-## Build (Theos, Mac ou Linux avec toolchain iOS)
+This Substrate tweak is for a **local mitmweb** lab:
+
+1. Force an HTTP proxy for the Waze process (Waze ignores Wi‑Fi proxy)
+2. Disable SSL trust (`SecTrustEvaluate`) for Waze
+
+## Build (Theos, Mac or Linux with iOS toolchain)
 
 ```bash
 export THEOS=~/theos
@@ -12,15 +16,15 @@ cd tweak/WazeIOS6Fix
 make package
 ```
 
-Le `.deb` sort dans `packages/`.
+The `.deb` lands in `packages/`.
 
-## Install sur l’iPhone
+## Install on the iPhone
 
-1. mitmweb tourne sur le PC (`192.168.1.191:8080`)
-2. Installe le `.deb` (Filza / `dpkg -i` / SCP + Cydia)
-3. Réglages → **WazeIOS6Fix** → IP du PC + port 8080 + Enable
-4. Respring, ouvre Waze
+1. mitmweb on the PC (`192.168.1.191:8080`)
+2. Install the `.deb` (Filza / `dpkg -i`)
+3. Settings → **WazeIOS6Fix** → PC IP + port 8080 + Enable
+4. Respring, open Waze
 
-## Bundle IDs ciblés
+## Bundle IDs
 
 `com.waze.iphone`, `com.waze.app`, `com.waze`, `com.google.waze`

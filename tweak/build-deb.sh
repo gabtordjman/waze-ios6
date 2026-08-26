@@ -3,11 +3,11 @@
 # Usage:
 #   sh tweak/build-deb.sh 203.0.113.50           # HTTP :80
 #   sh tweak/build-deb.sh 203.0.113.50:8080      # Apache occupe :80 → catcher :8080
-#   sh tweak/build-deb.sh 203.0.113.50:8080 1.0.1
+#   sh tweak/build-deb.sh 203.0.113.50:8080 1.0.2
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${1:?Usage: sh tweak/build-deb.sh VPS_IP[:PORT] [version]}"
-VER="${2:-1.0.0}"
+VER="${2:-1.0.2}"
 
 cd "$ROOT"
 python3 scripts/gen_map_starter.py

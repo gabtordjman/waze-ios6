@@ -13,7 +13,7 @@ import json
 from urllib.parse import parse_qs, unquote
 from urllib.request import Request, urlopen
 
-UA = "waze-ios6-catcher/1.0 (local lab)"
+UA = "Relight/1.0.2 (waze-ios6)"
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 
 

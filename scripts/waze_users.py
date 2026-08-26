@@ -14,6 +14,7 @@ from threading import Lock
 
 _lock = Lock()
 _peers: dict[str, dict] = {}
+_names: dict[str, str] = {}
 PEER_TTL = 90.0
 BOT_IDS = (2001, 2002, 2003, 2004)
 BOT_NAMES = ("lea", "marc", "nina", "tom")
@@ -56,15 +57,25 @@ def parse_at(body: bytes) -> dict | None:
     return None
 
 
+def bind_peer(peer: str, name: str) -> None:
+    """Associe l'IP du client au nick Login (compte unique par install)."""
+    n = _ascii(name)
+    if not peer or not n:
+        return
+    with _lock:
+        _names[peer] = n[:16]
+
+
 def note_presence(peer: str, body: bytes) -> None:
     got = parse_at(body)
     if not got or not peer:
         return
     uid = 3000 + (abs(hash(peer)) % 900)
     with _lock:
+        name = _names.get(peer) or f"wazer{uid}"
         _peers[peer] = {
             "id": uid,
-            "name": f"wazer{uid}",
+            "name": name,
             "lon": got["lon"],
             "lat": got["lat"],
             "speed": got["speed"],

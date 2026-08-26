@@ -83,14 +83,14 @@ fi
 
 DATE=$(date -Ru 2>/dev/null || date -u)
 cat > "$CYDIA/Release" << EOF
-Origin: waze-ios6
-Label: waze-ios6
+Origin: Relight
+Label: Relight
 Suite: stable
-Version: 1.0
+Version: 1.0.2
 Codename: ios6
 Architectures: iphoneos-arm
 Components: main
-Description: Waze 2.4 community server
+Description: Relight — community server for Waze 2.4
 Date: $DATE
 EOF
 echo "SHA1:" >> "$CYDIA/Release"

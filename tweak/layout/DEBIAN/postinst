@@ -99,9 +99,39 @@ grep -v '^Map.Static County:' | \
 grep -v '^Scoreboard.Feature enabled:' | \
 grep -v '^Scoreboard.Url:' | \
 grep -v '^User.Show points ticker:' | \
+grep -v '^Editor.Gray scale:' | \
 grep -v '^System.ServerId:' > /tmp/wpref.n
 
 # Pas de System.ServerId: 1 → GetGeoServerConfig au login pousse la config serveur.
+# Nick unique par appareil (sinon tous les wazers s'appellent ios6user).
+NICKFILE="/var/mobile/Library/Preferences/com.wazeios6.relight.nick"
+NICK=""
+if [ -s "$NICKFILE" ]; then
+  NICK=$(sed -n '1p' "$NICKFILE" | tr -cd 'A-Za-z0-9' | cut -c1-16)
+fi
+if [ -z "$NICK" ]; then
+  RND=$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+  [ -z "$RND" ] && RND=$(date +%s)
+  NICK="wazer$RND"
+  mkdir -p /var/mobile/Library/Preferences
+  echo "$NICK" > "$NICKFILE"
+fi
+# Locale iPhone : fr* → fra, sinon eng (GetGeo affine selon le GPS).
+WAZE_LANG=eng
+GLPREF="/var/mobile/Library/Preferences/.GlobalPreferences.plist"
+if [ -f "$GLPREF" ]; then
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -convert xml1 -o /tmp/relight-lang.plist "$GLPREF" 2>/dev/null || true
+    FIRST=$(awk '/AppleLanguages/{f=1} f && /<string>/{gsub(/.*<string>|<\/string>.*/,""); print; exit}' /tmp/relight-lang.plist 2>/dev/null)
+    rm -f /tmp/relight-lang.plist
+  else
+    FIRST=$(strings "$GLPREF" 2>/dev/null | grep -E '^(fr|en|de|es|it|pt)' | head -1)
+  fi
+  case "$FIRST" in
+    fr*) WAZE_LANG=fra ;;
+  esac
+fi
+
 echo "GeoConfig.version: 1" >> /tmp/wpref.n
 echo "GeoConfig.Web-Service Address: http://$SERVER/rtserver" >> /tmp/wpref.n
 echo "Realtime.Web-Service Address: http://$SERVER/rtserver" >> /tmp/wpref.n
@@ -113,9 +143,9 @@ echo "Realtime.Web-Service V2 Suffix:" >> /tmp/wpref.n
 echo "Realtime.Web-Service V2 Commands: RoutingRequest" >> /tmp/wpref.n
 echo "Realtime.Status: Enabled" >> /tmp/wpref.n
 echo "Realtime.Auto registration: Disabled" >> /tmp/wpref.n
-echo "Realtime.Name: ios6user" >> /tmp/wpref.n
-echo "Realtime.Password: ios6pass" >> /tmp/wpref.n
-echo "Realtime.Nickname: ios6user" >> /tmp/wpref.n
+echo "Realtime.Name: $NICK" >> /tmp/wpref.n
+echo "Realtime.Password: relight" >> /tmp/wpref.n
+echo "Realtime.Nickname: $NICK" >> /tmp/wpref.n
 echo "Download.Tiles: http://$SERVER/tiles" >> /tmp/wpref.n
 echo "Download.Source: http://$SERVER/maps" >> /tmp/wpref.n
 echo "Download.Map name: auto" >> /tmp/wpref.n
@@ -129,13 +159,13 @@ echo "Navigation.Navigation guidance on: yes" >> /tmp/wpref.n
 echo "Navigation.Navigation guidance enabled: yes" >> /tmp/wpref.n
 echo "Navigation.Navigation guidance type: Minimal" >> /tmp/wpref.n
 echo "Navigation.Guidance type default: Minimal" >> /tmp/wpref.n
-echo "Prompts.Name: fra" >> /tmp/wpref.n
-echo "System.Language: fra" >> /tmp/wpref.n
-echo "System.Default Language: fra" >> /tmp/wpref.n
+echo "Prompts.Name: $WAZE_LANG" >> /tmp/wpref.n
+echo "System.Language: $WAZE_LANG" >> /tmp/wpref.n
+echo "System.Default Language: $WAZE_LANG" >> /tmp/wpref.n
 echo "Map.Static County: 77001" >> /tmp/wpref.n
-echo "Scoreboard.Feature enabled: yes" >> /tmp/wpref.n
-echo "Scoreboard.Url: http://$SERVER/scoreboard" >> /tmp/wpref.n
+echo "Scoreboard.Feature enabled: no" >> /tmp/wpref.n
 echo "User.Show points ticker: yes" >> /tmp/wpref.n
+echo "Editor.Gray scale: yes" >> /tmp/wpref.n
 cp /tmp/wpref.n "$PREF"
 cp /tmp/wpref.n "$BUNDLE"
 
@@ -143,14 +173,16 @@ if [ -f "$USERF" ]; then
   grep -v '^Realtime.Name:' "$USERF" | \
   grep -v '^Realtime.Password:' | \
   grep -v '^Realtime.Nickname:' | \
+  grep -v '^User.Show points ticker:' | \
   grep -v '^Welcome Wizard.First time:' | \
   grep -v '^Welcome Wizard.Terms of Use accepted:' > /tmp/wuser.n
 else
   cp /dev/null /tmp/wuser.n
 fi
-echo "Realtime.Name: ios6user" >> /tmp/wuser.n
-echo "Realtime.Password: ios6pass" >> /tmp/wuser.n
-echo "Realtime.Nickname: ios6user" >> /tmp/wuser.n
+echo "Realtime.Name: $NICK" >> /tmp/wuser.n
+echo "Realtime.Password: relight" >> /tmp/wuser.n
+echo "Realtime.Nickname: $NICK" >> /tmp/wuser.n
+echo "User.Show points ticker: yes" >> /tmp/wuser.n
 echo "Welcome Wizard.First time: iphone_no" >> /tmp/wuser.n
 echo "Welcome Wizard.Terms of Use accepted: yes" >> /tmp/wuser.n
 cp /tmp/wuser.n "$USERF"
@@ -184,4 +216,4 @@ fi
 
 rm -f "$CONTAINER"/Documents/session*
 killall -9 Waze waze 2>/dev/null || true
-echo "Waze iOS6 → serveur $SERVER — OK"
+echo "Relight → $SERVER ($NICK / $WAZE_LANG) — OK"

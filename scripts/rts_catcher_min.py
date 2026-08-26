@@ -69,7 +69,7 @@ except ImportError:
     def _note_tile_served(kind: str = "wzm") -> None:
         pass
 
-CATCHER_REV = "proto150-route-20260826j"
+CATCHER_REV = "proto150-route-20260826k"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -84,6 +84,7 @@ MAPS = ROOT / "maps"     # paquets hors-ligne <region>/map<fips>.wzm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from waze_env import apply_to_environ, base_url, server_ip  # noqa: E402
+from waze_lang import client_lang  # noqa: E402
 
 apply_to_environ()
 PC_IP = server_ip()
@@ -132,8 +133,11 @@ except ImportError:
         return 0
 
 try:
-    from waze_users import note_presence, user_poll_lines
+    from waze_users import bind_peer, note_presence, user_poll_lines
 except ImportError:
+    def bind_peer(_peer: str, _name: str) -> None:
+        pass
+
     def note_presence(_peer: str, _body: bytes) -> None:
         pass
 
@@ -454,7 +458,8 @@ def _note_login_proof(cmds: list[str], user_hint: str = "ios6user") -> None:
 WORLD_FIPS = 77001
 
 
-def _server_params() -> list[tuple[str, str, str]]:
+def _server_params(lang: str = "fra") -> list[tuple[str, str, str]]:
+    lang = "eng" if lang == "eng" else "fra"
     return [
         ("Download", "Config", f"{BASE}/resources/config/"),
         ("Download", "Langs", f"{BASE}/resources/langs/"),
@@ -471,10 +476,10 @@ def _server_params() -> list[tuple[str, str, str]]:
         ("Navigation", "Navigation guidance enabled", "yes"),
         ("Navigation", "Guidance type default", "Minimal"),
         ("Navigation", "Navigation guidance type", "Minimal"),
-        ("Prompts", "Name", "fra"),
+        ("Prompts", "Name", lang),
         ("Prompts", "Updated new", "no"),
-        ("System", "Language", "fra"),
-        ("System", "Default Language", "fra"),
+        ("System", "Language", lang),
+        ("System", "Default Language", lang),
         # Look Waze 2.4 (capture Fontainebleau) : fond gris-bleu, rues grises
         # fines, axes beige — pas le bleu/blanc OSM. Catégories du schema GPL.
         ("Map", "Background", "#C5D0D4"),
@@ -534,24 +539,36 @@ def _server_params() -> list[tuple[str, str, str]]:
 _prefs_pushed: set[str] = set()
 
 
-def _update_config_lines() -> list[str]:
+def _lang_from_req(req_body: bytes) -> str:
+    pair = _coords_from_body(req_body)
+    if not pair:
+        return "eng"
+    return client_lang(pair[0], pair[1])
+
+
+def _update_config_lines(lang: str = "fra") -> list[str]:
+    lang = "eng" if lang == "eng" else "fra"
     return [
         "UpdateConfig,preferences,Editor,Gray scale,yes",
         "UpdateConfig,user,User,Show points ticker,yes",
         "UpdateConfig,preferences,Scoreboard,Feature enabled,no",
+        f"UpdateConfig,preferences,System,Language,{lang}",
+        f"UpdateConfig,preferences,System,Default Language,{lang}",
+        f"UpdateConfig,preferences,Prompts,Name,{lang}",
     ]
 
 
-def _once_update_config(peer: str) -> list[str]:
+def _once_update_config(peer: str, req_body: bytes = b"") -> list[str]:
     key = peer or "?"
     if key in _prefs_pushed:
         return []
     _prefs_pushed.add(key)
-    _log(f"  → UpdateConfig (prefs ticker, sans phone.sh) peer={key}")
-    return _update_config_lines()
+    lang = _lang_from_req(req_body)
+    _log(f"  → UpdateConfig ticker+lang={lang} peer={key}")
+    return _update_config_lines(lang)
 
 
-def _body_geo() -> bytes:
+def _body_geo(lang: str = "fra") -> bytes:
     """Réponse à GetGeoServerConfig.
 
     `on_geo_server_config` lit <id>,<name>,<lang>,<nb_paramètres>,<version> puis
@@ -561,17 +578,18 @@ def _body_geo() -> bytes:
 
     UpdateConfig est envoyé *avant* les ServerConfig pour être appliqué même
     si on_recieved_completed() coupe la transaction ensuite. Il ne compte
-    pas dans num_results.
+    pas dans num_results. `lang` = fra | eng selon le GPS du GetGeo.
     """
+    lang = "eng" if lang == "eng" else "fra"
     rows = [
         f"ServerConfig,{i},{cat},{key},{val}"
-        for i, (cat, key, val) in enumerate(_server_params())
+        for i, (cat, key, val) in enumerate(_server_params(lang))
     ]
     return _lines(
         [
             "RC,200,OK",
-            f"GeoServerConfig,1,world,fra,{len(rows)},1",
-            *_update_config_lines(),
+            f"GeoServerConfig,1,world,{lang},{len(rows)},1",
+            *_update_config_lines(lang),
             *rows,
         ]
     )
@@ -708,11 +726,14 @@ def _classify(req_body: bytes, path: str = "", peer: str = "") -> tuple[str, byt
     # GeoServerConfig, ServerConfig et UpdateConfig, sans handler par défaut.
     if cset & {"getgeoserverconfig", "getgeoconfig"}:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
-        return "GetGeo→GeoServerConfig", BODY_GEO, False
+        lang = _lang_from_req(req_body)
+        _log(f"  GetGeo lang={lang}")
+        return "GetGeo→GeoServerConfig", _body_geo(lang), False
 
     if cset & {"login", "guestlogin"}:
         _log(f"  req ({len(req_body)}B): {req_body!r}")
         _note_proto_b64(req_body)
+        bind_peer(peer, _req_user(req_body))
         name, body = _body_login(req_body)
         return f"Login→{name}", body, False
 
@@ -815,7 +836,7 @@ def _classify(req_body: bytes, path: str = "", peer: str = "") -> tuple[str, byt
     if cset & {"at", "seeme"}:
         note_presence(peer, req_body)
         extra = (
-            _once_update_config(peer)
+            _once_update_config(peer, req_body)
             + live_alert_lines()
             + user_poll_lines(peer)
         )
@@ -1080,8 +1101,9 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                 pl = path.lower().split("?", 1)[0]
                 if pl == "/cydia" or pl == "/cydia/":
                     body = (
-                        b"<html><body><h1>waze-ios6 Cydia</h1>"
-                        b"<p>Add this URL as Cydia source:</p>"
+                        b"<html><body><h1>Relight</h1>"
+                        b"<p>Community server for Waze 2.4 (iOS 6). "
+                        b"Add this URL as a Cydia source:</p>"
                         b"<code>"
                         + BASE.encode("ascii", errors="replace")
                         + b"/cydia</code></body></html>"

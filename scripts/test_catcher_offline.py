@@ -91,6 +91,19 @@ def test_fill_inserts_close_gap() -> None:
     assert [r[1] for r in out] == [0, 1, 2], [r[1] for r in out]
 
 
+def test_fill_across_tiles() -> None:
+    """Trou A→C : insérer la tuile B du couloir (sinon overlay coupé)."""
+    from waze_route import _fill_along_route
+
+    a = _line(1, 0, 0, 0, 3_000, 0, 0, 1)
+    mid = _line(2, 1, 3_000, 0, 5_000, 0, 10, 11)
+    b = _line(3, 2, 5_000, 0, 8_000, 0, 20, 21)
+    pts = [(x, 0) for x in range(0, 8_001, 200)]
+    out = _fill_along_route([a, b], [a, mid, b], pts)
+    assert [r[1] for r in out] == [0, 1, 2], [r[1] for r in out]
+    assert [r[0] for r in out] == [1, 2, 3], [r[0] for r in out]
+
+
 def _run_match(index, pts, length=1_200, duration=120):
     import waze_route as wr
 
@@ -334,6 +347,29 @@ def test_geo_french_and_thin_streets() -> None:
     assert "UpdateConfig,preferences,Editor,Gray scale,yes" in text
     assert "UpdateConfig,user,User,Show points ticker,yes" in text
     assert "UpdateConfig,preferences,Scoreboard,Feature enabled,no" in text
+    assert "UpdateConfig,preferences,System,Language,fra" in text
+    assert "UpdateConfig,preferences,Prompts,Name,fra" in text
+
+
+def test_geo_english_us() -> None:
+    import rts_catcher_min as rc
+
+    text = rc._body_geo("eng").decode("ascii")
+    assert "GeoServerConfig,1,world,eng," in text
+    assert ",Prompts,Name,eng" in text
+    assert ",System,Language,eng" in text
+    assert "UpdateConfig,preferences,Prompts,Name,eng" in text
+
+
+def test_lang_from_gps() -> None:
+    from waze_lang import client_lang
+
+    assert client_lang(6.4847, 46.3646) == "fra"
+    assert client_lang(2.35, 48.85) == "fra"
+    assert client_lang(-73.98, 40.75) == "eng"
+    assert client_lang(-0.12, 51.50) == "eng"
+    assert client_lang(-71.21, 46.81) == "fra"
+    assert client_lang(None, None) == "eng"
 
 
 def test_update_config_on_first_at() -> None:
@@ -341,13 +377,15 @@ def test_update_config_on_first_at() -> None:
     import rts_catcher_min as rc
 
     rc._prefs_pushed.clear()
-    first = rc._once_update_config("203.0.113.9")
-    assert first == rc._update_config_lines()
-    assert not rc._once_update_config("203.0.113.9")
-    text = "\r\n".join(rc._realtime_tail(b"At,6.48,46.36,0,0,0,-1,-1\n", first))
+    at = b"At,6.48470,46.36458,0.0,339,0,-1,-1\n"
+    first = rc._once_update_config("203.0.113.9", at)
+    assert first == rc._update_config_lines("fra")
+    assert not rc._once_update_config("203.0.113.9", at)
+    text = "\r\n".join(rc._realtime_tail(at, first))
     assert "UpdateConfig,preferences,Editor,Gray scale,yes" in text
     assert "UpdateConfig,user,User,Show points ticker,yes" in text
     assert "UpdateConfig,preferences,Scoreboard,Feature enabled,no" in text
+    assert "UpdateConfig,preferences,System,Language,fra" in text
 
 
 def test_prompts() -> None:
@@ -459,7 +497,7 @@ def test_resample_keeps_corner() -> None:
 
 
 def test_wazers_adduser() -> None:
-    from waze_users import add_user_line, user_poll_lines, note_presence
+    from waze_users import add_user_line, user_poll_lines, note_presence, bind_peer
 
     line = add_user_line(
         {
@@ -481,6 +519,10 @@ def test_wazers_adduser() -> None:
     assert user_poll_lines("192.168.1.60") == []
     rows = user_poll_lines("192.168.1.99")
     assert any(r.startswith("AddUser,") for r in rows)
+    bind_peer("10.0.0.8", "alice")
+    note_presence("10.0.0.8", b"At,6.48470,46.36458,0.0,12,90,-1,-1\n")
+    named = user_poll_lines("10.0.0.9")
+    assert any(",alice," in r for r in named), named
 
 
 def test_downsample() -> None:
@@ -616,6 +658,7 @@ def main() -> int:
         test_fill_gaps,
         test_fill_along_same_tiles,
         test_fill_inserts_close_gap,
+        test_fill_across_tiles,
         test_match_records_turn,
         test_match_stays_on_main,
         test_match_ignores_spur_when_osrm_cuts_corner,
@@ -638,6 +681,8 @@ def main() -> int:
         test_search_city,
         test_prompts,
         test_geo_french_and_thin_streets,
+        test_geo_english_us,
+        test_lang_from_gps,
         test_update_config_on_first_at,
         test_ascii_commas,
         test_major_ways,
