@@ -330,6 +330,24 @@ def test_geo_french_and_thin_streets() -> None:
     assert ",Scoreboard,Feature enabled,no" in text
     assert ",Editor,Gray scale,yes" in text
     assert ",User,Show points ticker,yes" in text
+    # VPS : pas de phone.sh — UpdateConfig écrit aussi le fichier `user`.
+    assert "UpdateConfig,preferences,Editor,Gray scale,yes" in text
+    assert "UpdateConfig,user,User,Show points ticker,yes" in text
+    assert "UpdateConfig,preferences,Scoreboard,Feature enabled,no" in text
+
+
+def test_update_config_on_first_at() -> None:
+    """Un client public ne refait jamais GetGeo : les prefs partent au 1er At."""
+    import rts_catcher_min as rc
+
+    rc._prefs_pushed.clear()
+    first = rc._once_update_config("203.0.113.9")
+    assert first == rc._update_config_lines()
+    assert not rc._once_update_config("203.0.113.9")
+    text = "\r\n".join(rc._realtime_tail(b"At,6.48,46.36,0,0,0,-1,-1\n", first))
+    assert "UpdateConfig,preferences,Editor,Gray scale,yes" in text
+    assert "UpdateConfig,user,User,Show points ticker,yes" in text
+    assert "UpdateConfig,preferences,Scoreboard,Feature enabled,no" in text
 
 
 def test_prompts() -> None:
@@ -620,6 +638,7 @@ def main() -> int:
         test_search_city,
         test_prompts,
         test_geo_french_and_thin_streets,
+        test_update_config_on_first_at,
         test_ascii_commas,
         test_major_ways,
         test_street_zoom_not_yellow,

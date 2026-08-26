@@ -69,7 +69,7 @@ except ImportError:
     def _note_tile_served(kind: str = "wzm") -> None:
         pass
 
-CATCHER_REV = "proto150-route-20260826i"
+CATCHER_REV = "proto150-route-20260826j"
 
 os.environ.setdefault("CATCHER_CTYPE", "binary/octet-stream")
 os.environ.setdefault("CATCHER_HTTP_VER", "1.1")
@@ -526,6 +526,31 @@ def _server_params() -> list[tuple[str, str, str]]:
     ]
 
 
+# ServerConfig écrit toujours dans `preferences` (on_server_config). Or le
+# ticker lit `User.Show points ticker` dans le fichier `user`. Et GetGeo n'est
+# demandé qu'une fois (ServerId != -1 ensuite) — donc un utilisateur VPS qui
+# n'a jamais eu phone.sh ne reverra jamais ces ServerConfig.
+# UpdateConfig,file,cat,key,val est dans general_parser : ça passe sur At/SeeMe.
+_prefs_pushed: set[str] = set()
+
+
+def _update_config_lines() -> list[str]:
+    return [
+        "UpdateConfig,preferences,Editor,Gray scale,yes",
+        "UpdateConfig,user,User,Show points ticker,yes",
+        "UpdateConfig,preferences,Scoreboard,Feature enabled,no",
+    ]
+
+
+def _once_update_config(peer: str) -> list[str]:
+    key = peer or "?"
+    if key in _prefs_pushed:
+        return []
+    _prefs_pushed.add(key)
+    _log(f"  → UpdateConfig (prefs ticker, sans phone.sh) peer={key}")
+    return _update_config_lines()
+
+
 def _body_geo() -> bytes:
     """Réponse à GetGeoServerConfig.
 
@@ -533,13 +558,22 @@ def _body_geo() -> bytes:
     `on_server_config` compte les lignes reçues et n'appelle
     `on_recieved_completed()` que lorsque le compte annoncé est atteint. Le
     nombre doit donc coller exactement — d'où le calcul plutôt qu'un littéral.
+
+    UpdateConfig est envoyé *avant* les ServerConfig pour être appliqué même
+    si on_recieved_completed() coupe la transaction ensuite. Il ne compte
+    pas dans num_results.
     """
     rows = [
         f"ServerConfig,{i},{cat},{key},{val}"
         for i, (cat, key, val) in enumerate(_server_params())
     ]
     return _lines(
-        ["RC,200,OK", f"GeoServerConfig,1,world,fra,{len(rows)},1", *rows]
+        [
+            "RC,200,OK",
+            f"GeoServerConfig,1,world,fra,{len(rows)},1",
+            *_update_config_lines(),
+            *rows,
+        ]
     )
 
 
@@ -780,7 +814,11 @@ def _classify(req_body: bytes, path: str = "", peer: str = "") -> tuple[str, byt
 
     if cset & {"at", "seeme"}:
         note_presence(peer, req_body)
-        extra = live_alert_lines() + user_poll_lines(peer)
+        extra = (
+            _once_update_config(peer)
+            + live_alert_lines()
+            + user_poll_lines(peer)
+        )
         if extra:
             n_al = sum(1 for r in extra if r.startswith("AddAlert"))
             n_u = sum(1 for r in extra if r.startswith("AddUser"))

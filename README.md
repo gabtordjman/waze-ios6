@@ -130,11 +130,16 @@ Le fichier `.env` n’est **pas** écrasé par `git pull` (il est dans `.gitigno
 ## Comportement runtime
 
 1. iPhone (tweak Cydia) → HTTP `http://WAZE_SERVER_IP/rtserver`
-2. Login protocole 150 + GetGeo → config `Download.*`, tuiles, scoreboard
-3. Premier GPS (`At` / `Location`) → build carte OSM dans `maps/auto/` (~30–90 s)
-4. Expansion Overpass si pan / destination hors bbox (file d’attente : 1 job à la fois)
-5. Tuiles : `GET /tiles/…` depuis le `.wzm` (+ stubs hors zone)
-6. Signalements, wazers, classement HTML
+2. Login protocole 150 + GetGeo → config `Download.*`, tuiles
+3. Premier GPS (`At` / `SeeMe`) → `UpdateConfig` (ticker / Gray scale / pas de
+   classement) — **pas besoin de `phone.sh`** ni de SSH sur l’iPhone
+4. Premier GPS → build carte OSM dans `maps/auto/` (~30–90 s)
+5. Expansion Overpass si pan / destination hors bbox (file d’attente : 1 job à la fois)
+6. Tuiles : `GET /tiles/…` depuis le `.wzm` (+ stubs hors zone)
+7. Signalements, wazers réels (pas de bots)
+
+Le ticker de points ne s’initialise qu’au **démarrage** de Waze. Après un
+`git pull` qui active `UpdateConfig`, tuer Waze et le rouvrir **une fois**.
 
 Compte client par défaut (tweak) : `ios6user` / `ios6pass`.
 
@@ -177,5 +182,6 @@ Détails : [`cydia/README.md`](cydia/README.md).
 | Login refuse | vérifier `WAZE_SERVER_IP` = IP vue par l’iPhone ; `journalctl -u waze-catcher` |
 | Carte vide | attendre GPS + Overpass ; logs `maps/auto/` ; `★ tuile` dans les logs |
 | Pas de GET `/tiles/` | prefs iPhone : `Download.Tiles` / tweak pas à jour |
+| Pas de bandeau +points | tuer Waze et relancer (ticker init au start) |
 
 Tests sans réseau : `python3 scripts/test_catcher_offline.py`.

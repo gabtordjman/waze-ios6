@@ -1,5 +1,7 @@
 #!/bin/sh
 # Patch Waze 2.4 / 3.9 — iPhone 4 / 4S (détecte Waze.app ou waze.app).
+# Lab local uniquement. Sur VPS public, le catcher pousse les mêmes prefs
+# via UpdateConfig (pas de SSH).
 # Sur le téléphone :  sh /tmp/waze-patch.sh
 # Depuis le PC      :  sh phone.sh [IP]
 
