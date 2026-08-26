@@ -63,7 +63,7 @@ try:
         note_served as _note_tile_served,
     )
 except ImportError:
-    def _get_wzm_tile(path: str, *, allow_stub: bool = True):
+    def _get_wzm_tile(path: str, *, allow_stub: bool = True, wait_build_sec: float = 0.0):
         return None, ""
 
     def _note_tile_served(kind: str = "wzm") -> None:
@@ -1110,13 +1110,16 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                     continue
                 is_tile = "/tiles" in path.lower()
                 if is_tile:
-                    blob, kind = _get_wzm_tile(path, allow_stub=True)
+                    # Jamais de stub vide : l'iPhone les met en cache et l'écran
+                    # reste blanc / flood de re-téléchargements hors zone.
+                    blob, kind = _get_wzm_tile(
+                        path, allow_stub=False, wait_build_sec=90.0
+                    )
                     if blob:
                         _note_tile_served(kind)
-                        msg = f"  ★ tuile {kind}: {Path(path).name} ({len(blob)}B)"
-                        if kind == "stub":
-                            msg += " (hors carte — pan/actualiser si zone GPS)"
-                        _log(msg)
+                        _log(
+                            f"  ★ tuile {kind}: {Path(path).name} ({len(blob)}B)"
+                        )
                         conn.sendall(
                             _http_envelope(
                                 blob, ack=b"", close=False, ctype=BIN_CT
@@ -1124,9 +1127,8 @@ def _handle_conn(conn: socket.socket, scheme: str) -> None:
                         )
                     else:
                         _log(
-                            f"  · tuile pas encore prête (build OSM?): {Path(path).name}"
+                            f"  · tuile absente (pas de stub): {Path(path).name}"
                         )
-                        _log(f"  · tuile hors carte locale: {Path(path).name}")
                         conn.sendall(
                             _http_envelope(
                                 b"",
